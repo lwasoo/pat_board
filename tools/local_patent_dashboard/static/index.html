@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>企业专利统计看板</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="logo">IP</span><div><strong>企业专利</strong><small>本机数据库</small></div></div>
+    <nav id="nav">
+      <button class="active" data-view="overview">统计总览</button>
+      <button data-view="families">专利族</button>
+      <button data-view="ledger">专利台账</button>
+      <button data-view="statistics">统计分析</button>
+      <button data-view="fees">缴费管理</button>
+      <button data-view="notifications">消息通知</button>
+    </nav>
+    <div class="local-pill"><i></i> 本机运行</div>
+    <button class="shutdown" id="shutdownBtn" title="停止本地服务">退出</button>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div><p class="eyebrow">PATENT OPERATIONS</p><h1 id="viewTitle">专利统计总览</h1><p id="viewSubtitle">核心指标与申请趋势，数据实时来自本机 SQLite。</p></div>
+      <div class="hero-actions"><button class="secondary" id="refreshBtn">刷新</button><button class="primary" id="addBtn">＋ 手动新增</button></div>
+    </section>
+
+    <section id="overviewView" class="view active">
+      <div class="metrics" id="metrics"></div>
+      <article class="panel alert-panel"><div class="panel-head"><div><h2>临期提醒</h2><p>未来 90 天待缴费用和已经逾期的事项</p></div><button class="link-btn" data-go="fees">查看缴费管理 →</button></div><div id="deadlineAlerts"></div></article>
+      <div class="grid2">
+        <article class="panel"><div class="panel-head"><div><h2>季度申请趋势</h2><p>点击季度查看对应台账</p></div><select id="yearSelect"></select></div><div id="quarterBars" class="bars"></div></article>
+        <article class="panel"><div class="panel-head"><div><h2>类型构成</h2><p>当前所选年度</p></div></div><div id="typeDonut" class="donut-wrap"></div></article>
+      </div>
+      <article class="panel"><div class="panel-head"><div><h2>最近专利</h2><p>最新 6 条记录</p></div><button class="link-btn" data-go="ledger">打开完整台账 →</button></div><div id="recentTable"></div></article>
+    </section>
+
+    <section id="familiesView" class="view">
+      <div id="familyGroups"></div>
+    </section>
+
+    <section id="ledgerView" class="view">
+      <article class="panel">
+        <div class="panel-head import-head"><div><h2>台账</h2><p>支持 Excel 批量导入、手动维护、批量导出和删除</p></div><div class="import-actions"><a class="secondary button-link" href="/api/patents/template">下载 Excel 模板</a><button class="secondary" id="excelImportBtn">Excel 批量导入</button><button class="primary" id="exportBtn">批量导出</button><button class="danger" id="batchDeleteBtn">批量删除</button><input hidden type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" id="excelFile"></div></div>
+        <div class="filters"><input id="searchInput" placeholder="搜索名称、申请号、发明人、代理编号或备注"><details class="multi-filter" id="countryFilter"><summary>全部国家/地区</summary><div class="multi-filter-menu"></div></details><details class="multi-filter" id="typeFilter"><summary>全部类型</summary><div class="multi-filter-menu"></div></details><details class="multi-filter" id="statusFilter"><summary>全部状态</summary><div class="multi-filter-menu"></div></details></div>
+        <div class="ledger-summary" id="ledgerSummary"></div>
+        <p class="selection-hint" id="selectionHint"></p>
+        <div id="ledgerTable"></div>
+      </article>
+    </section>
+
+    <section id="statisticsView" class="view">
+      <article class="panel"><div class="panel-head"><div><h2>统计分析</h2><p>月度、季度、年度统一在此切换</p></div><div class="stats-controls"><select id="statsMode"><option value="monthly">月度</option><option value="quarterly">季度</option><option value="annual">年度</option></select><select id="statsPeriod"></select></div></div><div id="periodSummary" class="period-summary"></div><div id="periodTable"></div></article>
+    </section>
+
+    <section id="feesView" class="view">
+      <article class="panel"><div class="panel-head"><div><h2>缴费台账</h2><p>按专利一行归并显示，展开后查看各国家和费用项目</p></div><div class="import-actions"><button class="danger" id="feeBatchDeleteBtn">批量删除</button><button class="primary" id="addFeeBtn">＋ 新增缴费</button></div></div><div class="filters"><select id="feeRegionFilter"><option value="">全部国家/地区</option></select><select id="feeStatusFilter"><option value="">全部状态</option><option>待缴费</option><option>已缴费</option><option>费用记录</option><option>已逾期</option><option>无需缴费</option></select></div><p class="selection-hint" id="feeSelectionHint"></p><div id="feesTable"></div></article>
+    </section>
+
+    <section id="notificationsView" class="view">
+      <div class="notify-layout">
+        <article class="panel"><div class="panel-head"><div><h2>企业微信提醒</h2><p>到期前 90 天、30 天、7 天、当天及逾期时分级推送</p></div></div>
+          <form id="notificationForm" class="notify-form">
+            <label>群机器人 Webhook<input type="password" id="webhookUrl" autocomplete="off" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..."></label>
+            <label>每天检查时间<input type="time" id="notificationTime" value="09:00" required></label>
+            <label class="toggle-line"><input type="checkbox" id="notificationEnabled">启用每日自动推送</label>
+            <div class="notify-actions"><button type="submit" class="primary">保存设置</button><button type="button" class="secondary" id="testNotificationBtn">发送测试消息</button><button type="button" class="secondary" id="runNotificationBtn">立即检查并推送</button></div>
+            <p class="error" id="notificationError"></p>
+          </form>
+        </article>
+        <article class="panel"><div class="panel-head"><div><h2>运行状态</h2><p>Webhook 只保存在本机 data 目录</p></div></div><div id="notificationStatus" class="notify-status">正在读取…</div><p class="notify-note">自动推送由 Windows 定时任务执行。到点时电脑需要开机并登录，且能够访问企业微信。Webhook 相当于群机器人的发送密码，请勿转发或放入 Excel。<br><a href="https://developer.work.weixin.qq.com/document/path/91770" target="_blank" rel="noreferrer">查看企业微信机器人说明</a></p></article>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="patentDialog" class="case-dialog">
+    <form id="patentForm">
+      <div class="dialog-head"><div><p class="eyebrow">PATENT RECORD</p><h2 id="dialogTitle">新增专利</h2></div><button type="button" class="icon-btn" id="closeDialog">×</button></div>
+      <input type="hidden" id="patentId">
+      <fieldset class="form-section"><legend>基本信息</legend><div class="form-grid">
+        <label>申请号<input required id="applicationNumber"></label><label>专利名称<input required id="title"></label>
+        <label>国家／地区<input id="countryRegion" list="countryOptions" value="中国"><datalist id="countryOptions"><option value="中国"><option value="美国"><option value="欧洲"><option value="印度"><option value="PCT"><option value="其他"></datalist></label>
+        <label>专利类型<select id="patentType"><option>发明</option><option>实用新型</option><option>外观设计</option></select></label>
+        <label>代理编号<input id="agentReference" placeholder="例如 PY-US-010"></label><label>法律状态<input id="legalStatus" list="statusOptions"><datalist id="statusOptions"><option value="撰写中"><option value="未公开"><option value="已申请"><option value="已公开"><option value="实审"><option value="审中"><option value="OA"><option value="复审"><option value="已授权"><option value="撤回"><option value="驳回"><option value="终止"></datalist></label>
+      </div></fieldset>
+      <fieldset class="form-section"><legend>日期与编号</legend><div class="form-grid">
+        <label>申请日<input type="date" id="applicationDate"></label><label>公开日<input type="date" id="publicationDate"></label>
+        <label>授权日<input type="date" id="grantDate"></label><label>到期日<input type="date" id="expirationDate"></label>
+        <label class="wide">公开号／授权号<input id="publicationNumber"></label><label class="wide">关联国家编号<textarea id="relatedNumbers" placeholder="例如 EP、IN、CN 的关联编号，每行一项"></textarea></label>
+      </div></fieldset>
+      <fieldset class="form-section"><legend>专利族与人员</legend><div class="form-grid">
+        <label>专利族编号<input id="familyNumber" placeholder="例如 22 或 PY-US-013"></label><label>专利族名称<input id="familyName"></label>
+        <label class="wide">发明人／设计人<input id="inventors" placeholder="多位人员可用顿号、逗号或空格分隔"></label>
+        <label>申请人／权利人<input id="owner" value="本公司"></label><label>部门<input id="department" value="研发部"></label><label>产品线<input id="productLine" value="未归类"></label>
+      </div></fieldset>
+      <fieldset class="form-section"><legend>文本与权项</legend><div class="form-grid">
+        <label>权利要求项数<input type="number" min="0" id="claimCount"></label><label>独立权利要求项数<input type="number" min="0" id="independentClaimCount"></label>
+        <label>说明书页数<input type="number" min="0" id="pageCount"></label><label>CN稿状态<input id="cnDraftStatus" placeholder="如：递交、公开、获证"></label>
+        <label class="wide">境外稿状态<input id="foreignDraftStatus" placeholder="如：PCT公开、OA1、核准"></label><label class="wide">备注<textarea id="caseNotes"></textarea></label>
+      </div></fieldset>
+      <p id="formError" class="error"></p>
+      <div class="dialog-actions"><button type="button" class="secondary" id="cancelDialog">取消</button><button class="primary" type="submit">保存</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="feeDialog">
+    <form id="feeForm">
+      <div class="dialog-head"><div><p class="eyebrow">PAYMENT RECORD</p><h2 id="feeDialogTitle">新增缴费</h2></div><button type="button" class="icon-btn" id="closeFeeDialog">×</button></div>
+      <input type="hidden" id="feeId">
+      <div class="form-grid">
+        <label class="wide">关联专利<select required id="feePatentId"></select></label>
+        <label>国家／地区<input id="feeRegion" list="feeRegionOptions"><datalist id="feeRegionOptions"><option value="中国"><option value="美国"><option value="欧洲"><option value="印度"><option value="PCT"></datalist></label>
+        <label>费用类型<input id="feeType" list="feeTypeOptions"><datalist id="feeTypeOptions"><option value="年费"><option value="申请费"><option value="实质审查费"><option value="登记费"><option value="代理费"><option value="其他"></datalist></label>
+        <label>缴费期限<input type="date" id="dueDate"></label>
+        <label>金额<input type="number" min="0" step="0.01" id="feeAmount"></label>
+        <label>原始值<input id="feeRawValue" placeholder="导入表中的原始金额、日期或说明"></label>
+        <label>币种<select id="currency"><option>CNY</option><option>USD</option><option>EUR</option><option>INR</option><option>JPY</option></select></label>
+        <label>状态<select id="feeStatus"><option>待缴费</option><option>已缴费</option><option>费用记录</option><option>已逾期</option><option>无需缴费</option></select></label>
+        <label>实际缴费日<input type="date" id="paidDate"></label>
+        <label class="wide">备注<input id="feeNote"></label>
+      </div>
+      <p id="feeFormError" class="error"></p>
+      <div class="dialog-actions"><button type="button" class="secondary" id="cancelFeeDialog">取消</button><button class="primary" type="submit">保存</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="confirmDialog" class="confirm"><div><h2>删除这条专利？</h2><p>关联的缴费记录也会一并删除，此操作无法撤销。</p><div class="dialog-actions"><button class="secondary" id="cancelDelete">取消</button><button class="danger" id="confirmDelete">确认删除</button></div></div></dialog>
+  <div id="toast"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

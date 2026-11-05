@@ -1,0 +1,13 @@
+# 单机版构建及本地数据
+/outputs/
+/tools/local_patent_dashboard/build/
+/tools/local_patent_dashboard/dist/
+/tools/local_patent_dashboard/data/
+/tools/local_patent_dashboard/__pycache__/
+
+# 临时文件
+/work/
+/tmp/
+__pycache__/
+*.pyc
+.DS_Store
