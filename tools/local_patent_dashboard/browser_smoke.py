@@ -12,7 +12,7 @@ from playwright.sync_api import sync_playwright, expect
 
 import dashboard_config as config
 from dashboard_database import connect
-from dashboard_documents import upload_document
+from dashboard_documents import upload_document, document_record, managed_path, save_analysis
 from test_documents import DocumentTests, sample_pdf
 
 
@@ -68,9 +68,20 @@ def run_browser_checks(base, pdf_path, screenshots):
      expect(page.locator('#rightPane')).not_to_be_visible()
      page.screenshot(path=str(screenshots / 'mobile.png'),full_page=True)
      assert not page.evaluate('document.documentElement.scrollWidth > innerWidth'), 'Mobile page overflows'
+     # A legacy empty result must show the dependency failure, not success.
+     record=document_record(1)
+     save_analysis(managed_path(record['object_path']), {
+         'status':'ready','progress':100,'pages':[{'text':'','ocr':False}],
+         'claims':[],'references':[],'metadata':{},
+         'warnings':['第 1 页：未找到 Tesseract OCR 引擎。']})
+     page.reload()
+     expect(page.locator('#documentStatus')).to_contain_text('未识别出文字')
+     expect(page.locator('#leftPane')).to_contain_text('Tesseract OCR 引擎')
+     expect(page.locator('#review')).not_to_be_visible()
+     expect(page.locator('#retry')).to_be_visible()
      print('browser errors',errors)
      assert not errors,errors
-     print('PASS: ledger navigation, claims filters, references, popup sync, fee CRUD, correction and PDF replacement')
+     print('PASS: ledger navigation, claims filters, references, popup sync, fee CRUD, correction, PDF replacement and missing-OCR failure state')
      browser.close()
 
 

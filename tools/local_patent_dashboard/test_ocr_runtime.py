@@ -67,5 +67,22 @@ class OcrRuntimeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'依赖 DLL'):
                 documents.ocr_page(pixmap)
 
+    def test_legacy_empty_success_is_reported_as_failure(self):
+        result={'status':'ready','pages':[{'text':'','ocr':False} for _ in range(22)],
+                'claims':[],'description':'','metadata':{},
+                'warnings':[f'第 {i} 页：未找到 Tesseract OCR 引擎。' for i in range(1,23)]}
+        documents.normalize_completed_status(result)
+        self.assertEqual(result['status'],'failed')
+        self.assertEqual(result['errorCode'],'OCR_ENGINE_MISSING')
+        self.assertEqual(result['ocrUnavailablePages'],list(range(1,23)))
+        self.assertEqual(len(result['warnings']),1)
+
+    def test_manually_reviewed_content_is_preserved(self):
+        result={'status':'ready','pages':[{'text':''}], 'claims':[{'text':'人工校对的权利要求'}],
+                'warnings':['未找到 Tesseract OCR 引擎。']}
+        documents.normalize_completed_status(result)
+        self.assertEqual(result['status'],'ready')
+        self.assertIn('未完成',result['message'])
+
 
 if __name__=='__main__': unittest.main()

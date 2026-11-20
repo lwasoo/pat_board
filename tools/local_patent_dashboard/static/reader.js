@@ -18,6 +18,7 @@ function docURL(suffix='') { return '/api/patents/document'+suffix+'?id='+id+'&v
 function empty(title,detail='') { return `<div class="empty"><strong>${esc(title)}</strong>${esc(detail)}</div>`; }
 function requireDocument() {
   if (!state.document) return empty('上传专利 PDF，开始对照阅读','支持文字版与扫描版 PDF，最大 50 MB / 150 页。文件仅保存在本机。');
+  if (analysis().status==='failed') return empty('识别未完成',analysis().message || '请检查 OCR 配置后重新识别，原 PDF 仍可查看。');
   if (analysis().status!=='ready') return empty('识别尚未完成','可先切换到原 PDF 阅读；文字结果将在识别完成后显示。');
   return null;
 }

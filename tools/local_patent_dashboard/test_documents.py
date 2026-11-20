@@ -78,15 +78,41 @@ class DocumentTests(unittest.TestCase):
             body=response.read()
             return json.loads(body) if response.headers['Content-Type'].startswith('application/json') else body
 
-    def wait_ready(self):
+    def wait_completed(self):
         deadline=time.monotonic()+120
         while time.monotonic()<deadline:
             result=self.request()
             if result['document']['analysis']['status'] not in {'queued','processing'}:
-                self.assertEqual(result['document']['analysis']['status'],'ready',result)
                 return result['document']
             time.sleep(.1)
-        self.fail('OCR did not complete')
+        self.fail('PDF extraction did not complete')
+
+    def wait_ready(self):
+        result=self.wait_completed()
+        self.assertEqual(result['analysis']['status'],'ready',result)
+        return result
+
+    def test_missing_engine_scan_fails_without_rendering_every_page(self):
+        with patch.object(documents,'ocr_command',return_value=[]), patch.object(documents,'ocr_page') as ocr, patch.object(documents,'render_for_ocr') as render:
+            self.request(method='POST',data=sample_pdf(scanned=True))
+            result=self.wait_completed()['analysis']
+            self.assertEqual(result['status'],'failed')
+            self.assertEqual(result['errorCode'],'OCR_ENGINE_MISSING')
+            self.assertEqual(result['ocrUnavailablePages'],[1,2,3,4])
+            self.assertEqual(sum('未找到 Tesseract' in w for w in result['warnings']),1)
+            self.assertIn('Tesseract',result['message'])
+            ocr.assert_not_called()
+            render.assert_not_called()
+            self.assertTrue(self.request('/file').startswith(b'%PDF-'))
+
+    def test_native_text_survives_missing_ocr_engine(self):
+        with patch.object(documents,'ocr_command',return_value=[]), patch.object(documents,'ocr_page') as ocr:
+            self.request(method='POST',data=sample_pdf())
+            result=self.wait_ready()['analysis']
+            self.assertEqual(len(result['claims']),3)
+            self.assertTrue(result['ocrUnavailable'])
+            self.assertIn('未完成',result['message'])
+            ocr.assert_not_called()
 
     def test_text_pdf_upload_classification_linking_and_correction(self):
         self.request(method='POST',data=sample_pdf())

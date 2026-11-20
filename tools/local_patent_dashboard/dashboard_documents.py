@@ -28,6 +28,7 @@ from dashboard_patent_text import (
 
 MAX_PDF_SIZE = 50 * 1024 * 1024
 MAX_PAGES = 150
+OCR_ENGINE_MISSING = "未找到 Tesseract OCR 引擎。请安装 Tesseract 5，或通过 PATENT_TESSERACT_CMD 指定 tesseract.exe 的完整路径，再重新识别；识别模型不能代替 OCR 程序。"
 _WORKER = ThreadPoolExecutor(max_workers=1, thread_name_prefix="patent-ocr")
 _LOCK = threading.RLock()
 _ACTIVE: set[str] = set()
@@ -102,7 +103,7 @@ def capabilities():
             languages = [line.strip() for line in result.stdout.splitlines()[1:] if line.strip()]
         except (OSError, subprocess.SubprocessError):
             pass
-    return {"pdf": pdf, "ocr": "chi_sim" in languages and "eng" in languages,
+    return {"pdf": pdf, "engineFound": bool(cmd), "ocr": "chi_sim" in languages and "eng" in languages,
             "languages": languages, "maxBytes": MAX_PDF_SIZE, "maxPages": MAX_PAGES}
 
 
@@ -145,6 +146,40 @@ def save_analysis(path, result):
     temporary.replace(target)
 
 
+def record_missing_ocr(result, page_number):
+    result["ocrUnavailable"] = True
+    pages = result.setdefault("ocrUnavailablePages", [])
+    if page_number not in pages:
+        pages.append(page_number)
+    if OCR_ENGINE_MISSING not in result["warnings"]:
+        result["warnings"].append(OCR_ENGINE_MISSING)
+
+
+def normalize_completed_status(result):
+    """Also correct legacy cached results that reported success with no content."""
+    if result.get("status") != "ready":
+        return
+    missing = [w for w in result.get("warnings", []) if "未找到 Tesseract OCR 引擎" in w]
+    if missing:
+        for warning in missing:
+            page = re.search(r"第\s*(\d+)\s*页", warning)
+            if page:
+                record_missing_ocr(result, int(page[1]))
+        result["ocrUnavailable"] = True
+        result["warnings"] = [OCR_ENGINE_MISSING] + [w for w in result["warnings"] if "未找到 Tesseract OCR 引擎" not in w]
+    usable = (any(p.get("text", "").strip() for p in result.get("pages", []))
+              or any(c.get("text", "").strip() for c in result.get("claims", []))
+              or bool(result.get("description", "").strip())
+              or any(str(value).strip() for value in result.get("metadata", {}).values()))
+    if not usable:
+        result["status"] = "failed"
+        result["errorCode"] = "OCR_ENGINE_MISSING" if result.get("ocrUnavailable") else "NO_TEXT_EXTRACTED"
+        result["message"] = ("未识别出文字：" + OCR_ENGINE_MISSING if result.get("ocrUnavailable")
+                             else "未识别出文字，请检查 PDF、OCR 引擎及语言模型；原 PDF 仍可查看。")
+    elif result.get("ocrUnavailable"):
+        result["message"] = "已提取可用文字；未找到 Tesseract，扫描页或图号 OCR 未完成。"
+
+
 def document_status(patent_id):
     with _LOCK:
         row = document_record(patent_id)
@@ -152,6 +187,7 @@ def document_status(patent_id):
             return {"document": None, "capabilities": capabilities()}
         path = managed_path(row["object_path"])
         analysis = read_analysis(path)
+        normalize_completed_status(analysis)
         analysis["needsReanalysis"] = analysis.get("status") == "ready" and analysis.get("parserVersion", 1) < PARSER_VERSION
         if analysis.get("status") in {"queued", "processing"} and str(path) not in _ACTIVE:
             analysis = {**analysis, "status": "interrupted", "message": "上次识别被中断，请重新识别。"}
@@ -305,6 +341,7 @@ def extract_document(path):
         if not path.is_file():
             raise ValueError("原始 PDF 文件不存在，可能被手工改名或移走，请在页面重新上传。")
         with engine.open(path) as pdf:
+            ocr_enabled = bool(ocr_command())
             result["pageCount"] = len(pdf)
             country = jurisdiction(pdf[0].get_text(sort=True))
             section_pages = {key: [] for key in sections}
@@ -319,21 +356,24 @@ def extract_document(path):
                 pix = None
                 native_body = len(re.findall(r"[\u3400-\u9fff]", text)) >= 8
                 if len(re.sub(r"\s", "", raw)) < 60 and not native_body and page_section(raw, None) != "drawings":
-                    pix = render_for_ocr(page)
-                    try:
-                        recognized, tokens = ocr_page(pix, language="eng" if country == "US" else None)
-                        if recognized.strip():
-                            raw = recognized
-                            country = country or jurisdiction(recognized)
-                            text, layout = ocr_reading_order(tokens, country, recognized)
-                            used_ocr = True
-                            uncertain = [w for w in tokens if w["confidence"] < 60][:100]
-                            if uncertain:
-                                result["warnings"].append(f"第 {index+1} 页有 {len(uncertain)} 个低置信度文字片段，请对照原 PDF。")
-                        elif not text.strip():
-                            result["warnings"].append(f"第 {index+1} 页未识别出文字，请对照原 PDF。")
-                    except (ValueError, subprocess.TimeoutExpired) as exc:
-                        result["warnings"].append(f"第 {index+1} 页：{exc}")
+                    if not ocr_enabled:
+                        record_missing_ocr(result, index+1)
+                    else:
+                        pix = render_for_ocr(page)
+                        try:
+                            recognized, tokens = ocr_page(pix, language="eng" if country == "US" else None)
+                            if recognized.strip():
+                                raw = recognized
+                                country = country or jurisdiction(recognized)
+                                text, layout = ocr_reading_order(tokens, country, recognized)
+                                used_ocr = True
+                                uncertain = [w for w in tokens if w["confidence"] < 60][:100]
+                                if uncertain:
+                                    result["warnings"].append(f"第 {index+1} 页有 {len(uncertain)} 个低置信度文字片段，请对照原 PDF。")
+                            elif not text.strip():
+                                result["warnings"].append(f"第 {index+1} 页未识别出文字，请对照原 PDF。")
+                        except (ValueError, subprocess.TimeoutExpired) as exc:
+                            result["warnings"].append(f"第 {index+1} 页：{exc}")
                 parts, previous = split_sections(text, previous, raw, index+1)
                 page_sections = list(dict.fromkeys(part["section"] for part in parts))
                 section = next(s for s in ("claims", "description", "drawings", "basic") if s in page_sections)
@@ -348,18 +388,21 @@ def extract_document(path):
                             labels.append({"text": number, "box": [word[0]/width, word[1]/height,
                                 (word[2]-word[0])/width, (word[3]-word[1])/height],
                                 "source": "pdf", "confidence": 100})
-                    try:
-                        pix = pix or render_for_ocr(page)
-                        candidates = []
-                        for segmentation in (11, 6):
-                            _, detected = ocr_page(pix, psm=segmentation, digits=True)
-                            candidates.extend(detected)
-                        for label in candidates:
-                            if re.fullmatch(r"\d{1,5}[a-zA-Z]?", label["text"]) and label["confidence"] >= 50:
-                                if not any(l["text"] == label["text"] and abs(l["box"][0]-label["box"][0]) < .03 and abs(l["box"][1]-label["box"][1]) < .03 for l in labels):
-                                    labels.append(label)
-                    except (ValueError, subprocess.TimeoutExpired) as exc:
-                        result["warnings"].append(f"第 {index+1} 页图号：{exc}")
+                    if not ocr_enabled:
+                        record_missing_ocr(result, index+1)
+                    else:
+                        try:
+                            pix = pix or render_for_ocr(page)
+                            candidates = []
+                            for segmentation in (11, 6):
+                                _, detected = ocr_page(pix, psm=segmentation, digits=True)
+                                candidates.extend(detected)
+                            for label in candidates:
+                                if re.fullmatch(r"\d{1,5}[a-zA-Z]?", label["text"]) and label["confidence"] >= 50:
+                                    if not any(l["text"] == label["text"] and abs(l["box"][0]-label["box"][0]) < .03 and abs(l["box"][1]-label["box"][1]) < .03 for l in labels):
+                                        labels.append(label)
+                        except (ValueError, subprocess.TimeoutExpired) as exc:
+                            result["warnings"].append(f"第 {index+1} 页图号：{exc}")
                 for part in parts:
                     sections[part["section"]].append(part["text"])
                     if index+1 not in section_pages[part["section"]]:
@@ -386,6 +429,7 @@ def extract_document(path):
         if not result["claims"]:
             result["warnings"].append("未可靠识别权利要求，请对照原 PDF 校对或补充。")
         result.update(status="ready", message="识别完成，请核对文字及附图编号。" if result["quality"]["passed"] is not False else "章节或项数与首页不一致，请对照 PDF 核对。", progress=100)
+        normalize_completed_status(result)
     except Exception as exc:
         result.update(status="failed", message=f"识别未完成：{exc}")
     finally:
