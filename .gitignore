@@ -15,3 +15,6 @@ __pycache__/
 # Local OCR models and development dependencies
 /tools/local_patent_dashboard/ocr/tessdata/
 /.venv/
+
+/.build-venv/
+/tools/local_patent_dashboard/ocr/tesseract/

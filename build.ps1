@@ -1,59 +1,79 @@
-﻿# 设置编码
+﻿param(
+    [string]$Python = "",
+    [string]$TesseractExe = "",
+    [string]$PipIndex = "",
+    [switch]$NoInstallOcr,
+    [switch]$NoPause
+)
+
+$ErrorActionPreference = "Stop"
 $OutputEncoding = [Console]::OutputEncoding = [Text.Encoding]::UTF8
-Set-Location -Path $PSScriptRoot
+$env:PYTHONUTF8 = "1"
+Set-Location -LiteralPath $PSScriptRoot
+$buildExit = 0
 
-Write-Host "============================================" -ForegroundColor Cyan
-Write-Host "  企业专利统计看板 - 自动打包脚本" -ForegroundColor Cyan
-Write-Host "============================================" -ForegroundColor Cyan
-Write-Host ""
-
-if (-not (Get-Command pyinstaller -ErrorAction SilentlyContinue)) {
-    Write-Host "[错误] 未找到 pyinstaller，请先安装：pip install pyinstaller" -ForegroundColor Red
-    Read-Host "按回车键退出"
-    exit 1
+function Invoke-Checked {
+    param([string]$Executable, [string[]]$Arguments)
+    & $Executable @Arguments
+    if ($LASTEXITCODE -ne 0) { throw "命令执行失败（退出码 $LASTEXITCODE）：$Executable" }
 }
 
-$specPath = Get-ChildItem -Path ".\tools\local_patent_dashboard\*.spec" | Select-Object -First 1
-if (-not $specPath) {
-    Write-Host "[错误] 未在 .\tools\local_patent_dashboard\ 找到 .spec 文件" -ForegroundColor Red
-    Read-Host "按回车键退出"
-    exit 1
-}
-
-Write-Host "[OCR] 本脚本会收集已下载的识别模型，不会打包 Tesseract OCR 引擎。" -ForegroundColor Yellow
-Write-Host "      使用扫描件或图号 OCR 的电脑需安装 Tesseract 5；或在 EXE 同目录保留完整的 ocr\tesseract 运行目录。" -ForegroundColor Yellow
-Write-Host "      可以通过 PATENT_TESSERACT_CMD 指定 tesseract.exe。" -ForegroundColor Yellow
-Write-Host ""
-
-$outDir = ".\outputs\单机版专利看板"
-
-Write-Host "[1/2] 正在打包，请稍候..." -ForegroundColor Yellow
-Write-Host "输出目录：$outDir"
-Write-Host ""
-
-& pyinstaller --noconfirm --clean --distpath $outDir --workpath ".\.package-build" $specPath.FullName
-
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "[错误] 打包失败，请检查上方日志。" -ForegroundColor Red
-    Read-Host "按回车键退出"
-    exit 1
-}
-
-Write-Host ""
-Write-Host "[2/2] 清理临时构建目录 .package-build ..." -ForegroundColor Yellow
-if (Test-Path ".\.package-build") {
-    try {
-        Remove-Item -Path ".\.package-build" -Recurse -Force -ErrorAction Stop
-        Write-Host "    已删除 .package-build"
-    } catch {
-        Write-Host "    [警告] 删除失败，可能有进程占用：$($_.Exception.Message)" -ForegroundColor Yellow
+try {
+    if ($env:OS -ne "Windows_NT") { throw "请在 Windows 上运行 build.bat。" }
+    Write-Host "企业专利统计看板 - Windows 完整便携版打包" -ForegroundColor Cyan
+    if (-not $Python) {
+        $projectPython = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
+        if (Test-Path -LiteralPath $projectPython) { $Python = $projectPython }
+        elseif (Get-Command py -ErrorAction SilentlyContinue) {
+            $Python = (& py -3 -c "import sys; print(sys.executable)")
+            if ($LASTEXITCODE -ne 0) { throw "未找到可用的 Python 3。" }
+        }
+        elseif (Get-Command python -ErrorAction SilentlyContinue) {
+            $Python = (& python -c "import sys; print(sys.executable)")
+            if ($LASTEXITCODE -ne 0) { throw "未找到可用的 Python 3。" }
+        }
+        else { throw "请先安装 Python 3.10+（64 位），或用 -Python 指定 python.exe。" }
     }
-} else {
-    Write-Host "    .package-build 不存在，跳过"
-}
+    $Python = ([string]$Python).Trim()
+    Invoke-Checked -Executable $Python -Arguments @("-c", "import sys,struct; assert sys.version_info >= (3,10) and struct.calcsize('P') == 8, 'Python 3.10+ x64 required'")
+    $buildPython = Join-Path $PSScriptRoot ".build-venv\Scripts\python.exe"
+    if (-not (Test-Path -LiteralPath $buildPython)) {
+        Invoke-Checked -Executable $Python -Arguments @("-m", "venv", ".build-venv")
+    }
+    $pipArguments = @("-m", "pip", "install", "--disable-pip-version-check", "--timeout", "120", "--retries", "5", "-r", "tools/local_patent_dashboard/build-requirements.txt")
+    if ($PipIndex) { $pipArguments += @("--index-url", $PipIndex) }
+    Invoke-Checked -Executable $buildPython -Arguments $pipArguments
 
-Write-Host ""
-Write-Host "============================================" -ForegroundColor Green
-Write-Host "  打包完成！输出目录：$outDir" -ForegroundColor Green
-Write-Host "============================================" -ForegroundColor Green
-Read-Host "按回车键退出"
+    $findArguments = @("tools/local_patent_dashboard/build_windows.py", "--find-tesseract")
+    if ($TesseractExe) { $findArguments += @("--tesseract", $TesseractExe) }
+    $runtime = & $buildPython @findArguments
+    $findExit = $LASTEXITCODE
+    if ($findExit -eq 3) {
+        if ($NoInstallOcr) { throw "未找到 Tesseract 5；请用 -TesseractExe 指定引擎路径。" }
+        if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+            throw "未找到 Tesseract，且此电脑没有 winget。请先安装 Tesseract 5，再运行本脚本。"
+        }
+        Write-Host "[OCR] 首次打包需要安装 Tesseract，Windows 可能要求确认安装许可或管理员权限。" -ForegroundColor Yellow
+        Invoke-Checked -Executable "winget" -Arguments @("install", "--exact", "--id", "UB-Mannheim.TesseractOCR", "--version", "5.4.0.20240606", "--source", "winget")
+        $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+        $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+        $env:Path = @($machinePath, $userPath, $env:Path) -join ";"
+        $runtime = & $buildPython @findArguments
+        $findExit = $LASTEXITCODE
+    }
+    if ($findExit -ne 0 -or -not $runtime) {
+        throw "Tesseract 路径检查失败。请检查 PATENT_TESSERACT_CMD，或用 -TesseractExe 指定实际路径。"
+    }
+    $runtime = ([string]$runtime).Trim()
+    Write-Host "[OCR] 将收集引擎、DLL 和模型，并验证移位后的实际识别能力。" -ForegroundColor Cyan
+    Invoke-Checked -Executable $buildPython -Arguments @("tools/local_patent_dashboard/build_windows.py", "--tesseract", $runtime)
+    Write-Host "打包完成。请分发完整 ZIP；使用电脑解压后双击 start.bat。" -ForegroundColor Green
+}
+catch {
+    Write-Host ("打包失败：" + $_.Exception.Message) -ForegroundColor Red
+    $buildExit = 1
+}
+finally {
+    if (-not $NoPause) { Read-Host "按回车键退出" | Out-Null }
+}
+exit $buildExit

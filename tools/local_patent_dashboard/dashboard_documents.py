@@ -66,7 +66,8 @@ def render_for_ocr(page):
 
 def ocr_command():
     configured = os.environ.get("PATENT_TESSERACT_CMD", "").strip().strip('"')
-    executable = shutil.which(configured or "tesseract")
+    portable = settings.app_dir() / "ocr/tesseract/tesseract.exe"
+    executable = str(portable) if not configured and sys.platform == "win32" and portable.is_file() else shutil.which(configured or "tesseract")
     if configured and not executable and Path(configured).is_file():
         executable = configured
     if not configured and not executable and sys.platform == "win32":
@@ -74,15 +75,19 @@ def ocr_command():
         candidates = [settings.app_dir() / "ocr/tesseract/tesseract.exe"]
         for variable, default in [("ProgramFiles", "C:/Program Files"), ("ProgramFiles(x86)", "C:/Program Files (x86)")]:
             candidates.append(Path(os.environ.get(variable, default)) / "Tesseract-OCR/tesseract.exe")
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            candidates.extend([Path(local)/"Programs/Tesseract-OCR/tesseract.exe", Path(local)/"Tesseract-OCR/tesseract.exe"])
         executable = next((str(path) for path in candidates if path.is_file()), None)
     if not executable:
         # Models are data, not a runnable OCR engine. Never start '--tessdata-dir'.
         return []
     model_dir = os.environ.get("PATENT_TESSDATA_DIR")
     if not model_dir:
-        bundled = settings.resource_path("ocr/tessdata")
-        if (bundled / "chi_sim.traineddata").is_file():
-            model_dir = str(bundled)
+        for directory in (settings.app_dir() / "ocr/tessdata", settings.resource_path("ocr/tessdata")):
+            if (directory / "chi_sim.traineddata").is_file() and (directory / "eng.traineddata").is_file():
+                model_dir = str(directory)
+                break
     command = [executable]
     if model_dir:
         command += ["--tessdata-dir", model_dir]

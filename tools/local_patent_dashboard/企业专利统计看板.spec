@@ -1,9 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
 from pathlib import Path
 
 root = Path(SPECPATH)
 ocr_models = root / "ocr" / "tessdata"
-model_datas = [(str(ocr_models), "ocr/tessdata")] if ocr_models.is_dir() else []
+model_datas = [(str(ocr_models), "ocr/tessdata")] if ocr_models.is_dir() and os.environ.get("PATENT_EXTERNAL_OCR") != "1" else []
 
 a = Analysis(
     [str(root / "local_dashboard.py")],

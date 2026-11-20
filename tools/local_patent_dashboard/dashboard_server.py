@@ -29,7 +29,7 @@ from dashboard_notifications import (
 )
 from dashboard_validation import clean_text, normalized_patent
 from dashboard_document_routes import DocumentRoutes
-from dashboard_documents import remove_managed_document
+from dashboard_documents import remove_managed_document, capabilities
 
 
 class PatentHandler(DocumentRoutes, BaseHTTPRequestHandler):
@@ -330,6 +330,9 @@ def existing_server(url: str) -> bool:
 
 
 def main() -> None:
+    if "--check-runtime" in sys.argv:
+        ready = capabilities()
+        raise SystemExit(0 if ready["pdf"] and ready["ocr"] else 1)
     if "--check-reminders" in sys.argv:
         initialize_database()
         try:

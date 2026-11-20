@@ -16,6 +16,7 @@ class OcrRuntimeTests(unittest.TestCase):
         self.models = self.root / 'models'
         self.models.mkdir()
         (self.models / 'chi_sim.traineddata').touch()
+        (self.models / 'eng.traineddata').touch()
         self.env = patch.dict(os.environ, {'PATENT_TESSERACT_CMD':'', 'PATENT_TESSDATA_DIR':''})
         self.env.start()
         self.addCleanup(self.env.stop)
@@ -46,12 +47,27 @@ class OcrRuntimeTests(unittest.TestCase):
             self.assertEqual(command[0], str(executable))
             self.assertEqual(command[1:], ['--tessdata-dir',str(self.models)])
 
+    def test_windows_per_user_install_location(self):
+        local=self.root/'AppData/Local'
+        executable=local/'Programs/Tesseract-OCR/tesseract.exe'
+        executable.parent.mkdir(parents=True)
+        executable.touch()
+        with patch.object(documents.sys,'platform','win32'), patch.dict(os.environ,{'LOCALAPPDATA':str(local)}):
+            self.assertEqual(documents.ocr_command()[0],str(executable))
+
     def test_windows_portable_runtime_location(self):
         executable = self.root/'ocr/tesseract/tesseract.exe'
         executable.parent.mkdir(parents=True)
         executable.touch()
-        with patch.object(documents.sys, 'platform', 'win32'):
+        with patch.object(documents.sys, 'platform', 'win32'), patch.object(documents.shutil, 'which', return_value='C:/old/tesseract.exe'):
             self.assertEqual(documents.ocr_command()[0], str(executable))
+
+    def test_external_models_are_used_by_a_frozen_portable_app(self):
+        models=self.root/'ocr/tessdata'
+        models.mkdir(parents=True)
+        for language in ['eng','chi_sim']:(models/(language+'.traineddata')).touch()
+        with patch.object(documents.shutil,'which',return_value='/engine/tesseract'):
+            self.assertEqual(documents.ocr_command()[1:],['--tessdata-dir',str(models)])
 
     def test_invalid_override_does_not_execute_model_flags(self):
         with patch.dict(os.environ, {'PATENT_TESSERACT_CMD':str(self.root/'missing.exe')}):

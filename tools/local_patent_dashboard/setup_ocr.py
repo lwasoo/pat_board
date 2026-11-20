@@ -1,5 +1,6 @@
 """Download pinned official Chinese/English Tesseract models with SHA-256 checks."""
 import hashlib
+import shutil
 import urllib.request
 from pathlib import Path
 
@@ -15,6 +16,8 @@ MODELS = {
 def main():
     directory = Path(__file__).resolve().parent / 'ocr' / 'tessdata'
     directory.mkdir(parents=True, exist_ok=True)
+    license_path = Path(__file__).resolve().parent / 'third_party/OCR-MODELS-LICENSE.txt'
+    shutil.copy2(license_path, directory / 'LICENSE-models.txt')
     for language, (repository, revision, digest) in MODELS.items():
         target = directory / (language + '.traineddata')
         if target.is_file() and hashlib.sha256(target.read_bytes()).hexdigest() == digest:

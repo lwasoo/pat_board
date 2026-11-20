@@ -77,8 +77,8 @@
 `C:\Program Files\Tesseract-OCR\tesseract.exe`。
 
 PyInstaller 打包前，应在同一 Python 环境安装 `requirements.txt` 并运行 `setup_ocr.py`；
-spec 会收集本地 OCR 模型。Tesseract 可执行程序需另行安装，它不会自动打包进 EXE。
-本轮在 Linux 上验证了源码工作流，未验证 Windows EXE。
+直接调用 spec 时会收集本地 OCR 模型，但仍需外部 Tesseract。
+推荐使用下文的 `build.bat` 生成完整便携目录，它会一起收集引擎、DLL 和模型。
 
 ### 验证
 
@@ -114,8 +114,8 @@ INID 字段支持中英文标签；部件名称支持带括号和不带括号的
 ### Windows EXE 出现 WinError 2
 
 识别模型（`chi_sim.traineddata`、`eng.traineddata`）与 OCR 引擎是不同的依赖。
-当前 spec 收集模型，`build.bat` 不会把 Tesseract 自动放入 EXE。
-运行扫描件及附图 OCR 时需安装 Tesseract 5；默认查找 PATH 及
+直接调用 spec 时只收集模型；新版 `build.bat` 会将 Tesseract 与 DLL 收集到 EXE 旁边的便携目录，不会塞入单个 EXE。
+手工打包且未携带引擎的旧 EXE 运行扫描件及附图 OCR 时需安装 Tesseract 5；默认查找 PATH 及
 `C:\Program Files\Tesseract-OCR\tesseract.exe`，也支持 EXE 同目录的
 `ocr/tesseract/tesseract.exe`。便携分发需要复制完整运行目录及依赖 DLL，不能只复制一个 EXE。
 通过 `PATENT_TESSERACT_CMD` 指定其他安装路径时，应在设置该变量的同一终端启动看板。
@@ -131,3 +131,53 @@ OCR 引擎缺失时，不再逐页栅格化并重复同一错误：全扫描文�
 旧版本缓存中“全部文字为空但状态成功”的结果也会在读取时提示失败，人工校对过的内容保留。
 运行诊断接口 `/api/patents/document/capabilities` 的 `engineFound` 表示是否找到引擎，
 `ocr` 还要求具备中英文模型。安装或配置引擎后需重新识别，更新提示逻辑不能代替安装引擎。
+
+## 一键构建 Windows 完整便携版
+
+在 64 位 Windows 上双击项目根目录的 `build.bat`：
+
+1. 选择项目 `.venv` 或已安装的 Python 3.10+（64 位），创建可复用的 `.build-venv`。
+2. 在该环境中安装固定版本的打包依赖，使用同一个 Python 执行 PyInstaller。
+3. 自动寻找 Tesseract；没有安装时通过 WinGet 的 `UB-Mannheim.TesseractOCR` 安装固定版本 `5.4.0.20240606`（使用已有 Tesseract 5 时不重复安装），
+   Windows 可能要求确认许可或管理员权限。没有 WinGet 时需先安装一次 Tesseract。
+4. 下载并校验固定版本的中英文模型，将 Tesseract、依赖 DLL 和许可文件一起收集到输出。
+5. 将包移到另一个含空格及中文的目录，以不含原安装目录的 PATH 验证引擎启动、模型加载、
+   两个模型的实际识别，以及打包后的应用运行依赖。检查不通过会停止发布输出。
+6. 生成便携目录和 ZIP。更新输出只替换程序管理的文件，既有 `data` 目录保持原样；
+   分发 ZIP 从干净的构建目录生成，不包含打包电脑的业务数据库和上传文件。
+
+输出：
+
+```text
+outputs/
+  企业专利统计看板-便携版.zip
+  单机版专利看板/
+    企业专利统计看板.exe
+    start.bat
+    使用说明.txt
+    build-info.json
+    ocr/
+      tesseract/  # 引擎及依赖 DLL
+      tessdata/   # chi_sim、eng 及模型许可证
+```
+
+使用电脑完整解压 ZIP 后双击 `start.bat`，无需安装 Python、Tesseract 或手工设置变量。
+BAT 会使用相邻的 OCR 目录；直接运行 EXE 也优先使用相邻的引擎和模型。
+不要只发送单个 EXE。首次在构建电脑上准备依赖需要联网，已构建的便携包识别时可离线使用。
+
+可选参数（在项目根目录的 PowerShell 中运行）：
+
+```powershell
+# 下载 Python 依赖较慢时，仅本次构建使用清华镜像
+.\build.bat -PipIndex https://pypi.tuna.tsinghua.edu.cn/simple
+
+# 指定已经安装好的引擎，禁止自动安装
+.\build.bat -TesseractExe "D:\Tesseract-OCR\tesseract.exe" -NoInstallOcr
+
+# 指定 Python，结束时不等待按键
+.\build.bat -Python "C:\Path\To\python.exe" -NoPause
+```
+
+`--check-runtime` 是打包工具使用的无服务诊断参数，不会初始化台账或监听端口。
+便携文件收集、移位检查调用、失败回滚、数据保护和运行时查找已有回归测试。
+当前云环境是 Linux，未在此实际运行 Windows 打包；Windows 构建时会执行上述原生检查。
