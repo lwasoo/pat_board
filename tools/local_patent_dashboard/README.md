@@ -139,7 +139,7 @@ OCR 引擎缺失时，不再逐页栅格化并重复同一错误：全扫描文�
 1. 选择项目 `.venv` 或已安装的 Python 3.10+（64 位），创建可复用的 `.build-venv`。
 2. 在该环境中安装固定版本的打包依赖，使用同一个 Python 执行 PyInstaller。
 3. 自动寻找 Tesseract；没有安装时通过 WinGet 的 `UB-Mannheim.TesseractOCR` 安装固定版本 `5.4.0.20240606`（使用已有 Tesseract 5 时不重复安装），
-   Windows 可能要求确认许可或管理员权限。没有 WinGet 时需先安装一次 Tesseract。
+   Windows 可能要求确认许可或管理员权限。WinGet 网络下载失败或不存在时，改用 Python HTTPS 依次尝试项目官方 GitHub 和曼海姆大学下载地址，校验后打开安装窗口；取消安装不会触发重试。
 4. 下载并校验固定版本的中英文模型，将 Tesseract、依赖 DLL 和许可文件一起收集到输出。
 5. 将包移到另一个含空格及中文的目录，以不含原安装目录的 PATH 验证引擎启动、模型加载、
    两个模型的实际识别，以及打包后的应用运行依赖。检查不通过会停止发布输出。
@@ -171,12 +171,19 @@ BAT 会使用相邻的 OCR 目录；直接运行 EXE 也优先使用相邻的引
 # 下载 Python 依赖较慢时，仅本次构建使用清华镜像
 .\build.bat -PipIndex https://pypi.tuna.tsinghua.edu.cn/simple
 
+# 提供通过浏览器或另一台联网电脑下载的官方安装包
+.\build.bat -OcrInstaller "C:\Downloads\tesseract-ocr-w64-setup-5.4.0.20240606.exe"
+
 # 指定已经安装好的引擎，禁止自动安装
 .\build.bat -TesseractExe "D:\Tesseract-OCR\tesseract.exe" -NoInstallOcr
 
 # 指定 Python，结束时不等待按键
 .\build.bat -Python "C:\Path\To\python.exe" -NoPause
 ```
+
+遇到 `InternetOpenUrl() failed / 0x80072efd` 表示 WinGet 无法连接下载站点；`-PipIndex` 只影响 Python 依赖，不能修复 OCR 安装包下载。更新代码后重新运行 BAT 会使用上述下载回退。若两个官方地址都无法访问，可从 [官方 GitHub 发布页](https://github.com/UB-Mannheim/tesseract/releases/tag/v5.4.0.20240606) 下载固定版本的 `tesseract-ocr-w64-setup-5.4.0.20240606.exe`，再通过 `-OcrInstaller` 指定文件。
+
+安装包 SHA-256 固定为 `c885fff6998e0608ba4bb8ab51436e1c6775c2bafc2559a19b423e18678b60c9`，来源为 [Microsoft WinGet 清单](https://github.com/microsoft/winget-pkgs/blob/master/manifests/u/UB-Mannheim/TesseractOCR/5.4.0.20240606/UB-Mannheim.TesseractOCR.installer.yaml)。本地文件与自动下载均在执行前校验，不接受其他版本冒充。自动下载缓存位于 `.build-cache/ocr`，下次构建可复用；安装窗口仍需正常确认许可及 Windows 权限提示。
 
 `--check-runtime` 是打包工具使用的无服务诊断参数，不会初始化台账或监听端口。
 便携文件收集、移位检查调用、失败回滚、数据保护和运行时查找已有回归测试。

@@ -6,6 +6,8 @@
 
 在 Windows 上运行根目录 `build.bat` 生成完整便携包，完成后双击 `outputs/单机版专利看板/start.bat`。分发时发送生成的便携 ZIP，使用电脑完整解压后运行其中的 `start.bat`，无需另外安装 Python 或 OCR 引擎。程序仅监听 `127.0.0.1`，数据保存在 EXE 同目录的 `data/patents.db`。
 
+WinGet 下载 OCR 报 `0x80072efd` 时，脚本会尝试备用下载；也可用 `build.bat -OcrInstaller "官方安装包路径"` 提供本地安装包。版本及下载说明见 [Windows 打包说明](tools/local_patent_dashboard/README.md#一键构建-windows-完整便携版)。
+
 ## 功能
 
 - 包含完整案件字段的 Excel 模板下载、批量导入和批量导出；费用汇总按一个专利一行，并兼容旧“缴费台账”和既有“专利家族/费用”格式

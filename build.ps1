@@ -2,6 +2,7 @@
     [string]$Python = "",
     [string]$TesseractExe = "",
     [string]$PipIndex = "",
+    [string]$OcrInstaller = "",
     [switch]$NoInstallOcr,
     [switch]$NoPause
 )
@@ -50,11 +51,42 @@ try {
     $findExit = $LASTEXITCODE
     if ($findExit -eq 3) {
         if ($NoInstallOcr) { throw "未找到 Tesseract 5；请用 -TesseractExe 指定引擎路径。" }
-        if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-            throw "未找到 Tesseract，且此电脑没有 winget。请先安装 Tesseract 5，再运行本脚本。"
+        $cacheInstaller = Join-Path $PSScriptRoot ".build-cache\ocr\tesseract-ocr-w64-setup-5.4.0.20240606.exe"
+        $installerToRun = ""
+        if ($OcrInstaller) {
+            $installerToRun = (Resolve-Path -LiteralPath $OcrInstaller).Path
         }
-        Write-Host "[OCR] 首次打包需要安装 Tesseract，Windows 可能要求确认安装许可或管理员权限。" -ForegroundColor Yellow
-        Invoke-Checked -Executable "winget" -Arguments @("install", "--exact", "--id", "UB-Mannheim.TesseractOCR", "--version", "5.4.0.20240606", "--source", "winget")
+        elseif (Test-Path -LiteralPath $cacheInstaller) {
+            & $buildPython "tools/local_patent_dashboard/ocr_installer.py" --verify $cacheInstaller
+            if ($LASTEXITCODE -eq 0) { $installerToRun = $cacheInstaller }
+        }
+        if (-not $installerToRun) {
+            if (Get-Command winget -ErrorAction SilentlyContinue) {
+                Write-Host "[OCR] 首次打包需要安装 Tesseract，Windows 可能要求确认安装许可或管理员权限。" -ForegroundColor Yellow
+                & winget install --exact --id UB-Mannheim.TesseractOCR --version 5.4.0.20240606 --source winget
+                $wingetExit = $LASTEXITCODE
+                if ($wingetExit -ne 0) {
+                    # Only retry transport failures. Do not restart a cancelled/rejected installation.
+                    $networkErrors = @(-2147012867, -2147012894, -2147012889)
+                    if ($networkErrors -notcontains $wingetExit) {
+                        throw "WinGet 安装失败（退出码 $wingetExit）。可通过 -OcrInstaller 提供已下载的官方安装包。"
+                    }
+                    Write-Host "[OCR] WinGet 网络下载失败，改用 Python HTTPS 下载，并保留证书和 SHA-256 校验。" -ForegroundColor Yellow
+                }
+                $runtime = & $buildPython @findArguments
+                $findExit = $LASTEXITCODE
+            }
+            if ($findExit -eq 3) {
+                Invoke-Checked -Executable $buildPython -Arguments @("tools/local_patent_dashboard/ocr_installer.py", "--download", $cacheInstaller)
+                $installerToRun = $cacheInstaller
+            }
+        }
+        if ($installerToRun) {
+            Invoke-Checked -Executable $buildPython -Arguments @("tools/local_patent_dashboard/ocr_installer.py", "--verify", $installerToRun)
+            Write-Host "[OCR] 安装包校验通过，正在打开安装窗口；完成安装后继续打包。" -ForegroundColor Cyan
+            $installation = Start-Process -FilePath $installerToRun -Wait -PassThru
+            if ($installation.ExitCode -ne 0) { throw "OCR 安装未完成（退出码 $($installation.ExitCode)）。" }
+        }
         $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
         $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
         $env:Path = @($machinePath, $userPath, $env:Path) -join ";"
