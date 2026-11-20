@@ -20,6 +20,11 @@ if (-not $specPath) {
     exit 1
 }
 
+Write-Host "[OCR] 本脚本会收集已下载的识别模型，不会打包 Tesseract OCR 引擎。" -ForegroundColor Yellow
+Write-Host "      使用扫描件或图号 OCR 的电脑需安装 Tesseract 5；或在 EXE 同目录保留完整的 ocr\tesseract 运行目录。" -ForegroundColor Yellow
+Write-Host "      可以通过 PATENT_TESSERACT_CMD 指定 tesseract.exe。" -ForegroundColor Yellow
+Write-Host ""
+
 $outDir = ".\outputs\单机版专利看板"
 
 Write-Host "[1/2] 正在打包，请稍候..." -ForegroundColor Yellow

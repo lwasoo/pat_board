@@ -110,3 +110,18 @@ INID 字段支持中英文标签；部件名称支持带括号和不带括号的
 前者提取 19 项权利要求（1 项独权），后者提取 24 项（4 项独权），分别验证了 11 页与
 7 页附图及图号定位。真实样本回归的使用方式及逐页预期见
 [fixtures README](tests/fixtures/patents/README.md)。PDF 原文件不随代码提交。
+
+### Windows EXE 出现 WinError 2
+
+识别模型（`chi_sim.traineddata`、`eng.traineddata`）与 OCR 引擎是不同的依赖。
+当前 spec 收集模型，`build.bat` 不会把 Tesseract 自动放入 EXE。
+运行扫描件及附图 OCR 时需安装 Tesseract 5；默认查找 PATH 及
+`C:\Program Files\Tesseract-OCR\tesseract.exe`，也支持 EXE 同目录的
+`ocr/tesseract/tesseract.exe`。便携分发需要复制完整运行目录及依赖 DLL，不能只复制一个 EXE。
+通过 `PATENT_TESSERACT_CMD` 指定其他安装路径时，应在设置该变量的同一终端启动看板。
+
+程序上传 PDF 后将其保存为 `data/documents/<版本>/original.pdf`，并将该路径写入 SQLite。
+上传前的中文名称、空格及括号不需要手工处理；不要在数据目录手工改名或移动文件。
+若已改名，应按数据库记录恢复原路径或通过页面重新上传，保留一份外部原件。
+更新后的报错会区分缺少 OCR 引擎、引擎/DLL 无法启动以及原始 PDF 路径缺失。
+Windows 路径查找和缺少引擎的情况已有模拟回归测试，尚未在 Windows 实机上执行打包验证。

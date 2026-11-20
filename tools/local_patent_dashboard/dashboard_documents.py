@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -63,17 +64,25 @@ def render_for_ocr(page):
 
 
 def ocr_command():
-    executable = os.environ.get("PATENT_TESSERACT_CMD") or shutil.which("tesseract")
-    if not executable and os.name == "nt":
-        candidate = Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Tesseract-OCR/tesseract.exe"
-        if candidate.is_file():
-            executable = str(candidate)
+    configured = os.environ.get("PATENT_TESSERACT_CMD", "").strip().strip('"')
+    executable = shutil.which(configured or "tesseract")
+    if configured and not executable and Path(configured).is_file():
+        executable = configured
+    if not configured and not executable and sys.platform == "win32":
+        # A portable distribution must include the complete runtime (DLLs too).
+        candidates = [settings.app_dir() / "ocr/tesseract/tesseract.exe"]
+        for variable, default in [("ProgramFiles", "C:/Program Files"), ("ProgramFiles(x86)", "C:/Program Files (x86)")]:
+            candidates.append(Path(os.environ.get(variable, default)) / "Tesseract-OCR/tesseract.exe")
+        executable = next((str(path) for path in candidates if path.is_file()), None)
+    if not executable:
+        # Models are data, not a runnable OCR engine. Never start '--tessdata-dir'.
+        return []
     model_dir = os.environ.get("PATENT_TESSDATA_DIR")
     if not model_dir:
         bundled = settings.resource_path("ocr/tessdata")
         if (bundled / "chi_sim.traineddata").is_file():
             model_dir = str(bundled)
-    command = [executable] if executable else []
+    command = [executable]
     if model_dir:
         command += ["--tessdata-dir", model_dir]
     return command
@@ -206,6 +215,8 @@ def retry_document(patent_id):
         if not row:
             raise FileNotFoundError("尚未上传 PDF。")
         path = managed_path(row["object_path"])
+        if not path.is_file():
+            raise FileNotFoundError("原始 PDF 文件不存在，可能被手工改名或移走。请恢复数据库记录的文件路径，或在页面重新上传；程序默认保存为 original.pdf。")
         if str(path) not in _ACTIVE:
             if len(_ACTIVE) >= 4:
                 raise ValueError("识别队列已满，请稍后再试。")
@@ -229,12 +240,17 @@ def delete_document(patent_id):
 def ocr_page(pixmap, psm=3, digits=False, language=None):
     command = ocr_command()
     if not command:
-        raise ValueError("未安装 Tesseract OCR；扫描页需要安装中文和英文识别模型。")
+        raise ValueError("未找到 Tesseract OCR 引擎。识别模型不能代替 tesseract.exe；请安装 Tesseract 5，或通过 PATENT_TESSERACT_CMD 指定其完整路径，再重新识别。")
     command += ["stdin", "stdout", "-l", "eng" if digits else (language or "chi_sim+eng"), "--psm", str(psm)]
     if digits:
         command += ["-c", "tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyz"]
-    result = subprocess.run(command + ["-c", "tessedit_create_tsv=1", "-c", "tessedit_create_txt=0"], input=pixmap.tobytes("png"),
-                            capture_output=True, timeout=90)
+    try:
+        result = subprocess.run(command + ["-c", "tessedit_create_tsv=1", "-c", "tessedit_create_txt=0"], input=pixmap.tobytes("png"),
+                                capture_output=True, timeout=90)
+    except FileNotFoundError as exc:
+        raise ValueError("无法启动 Tesseract OCR 引擎，请检查 tesseract.exe 的安装位置及 PATENT_TESSERACT_CMD 配置。") from exc
+    except OSError as exc:
+        raise ValueError("Tesseract OCR 引擎启动失败，请检查程序位数和依赖 DLL；使用便携版时需保留完整安装目录。") from exc
     if result.returncode:
         raise ValueError("OCR 未能完成，请确认 Tesseract 及 chi_sim、eng 模型已安装。")
     if not result.stdout.startswith(b"level\t"):
@@ -286,6 +302,8 @@ def extract_document(path):
         engine = pdf_engine()
         sections = {"basic": [], "claims": [], "description": [], "drawings": []}
         previous = None
+        if not path.is_file():
+            raise ValueError("原始 PDF 文件不存在，可能被手工改名或移走，请在页面重新上传。")
         with engine.open(path) as pdf:
             result["pageCount"] = len(pdf)
             country = jurisdiction(pdf[0].get_text(sort=True))

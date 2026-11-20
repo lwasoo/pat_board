@@ -137,6 +137,17 @@ class DocumentTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as caught:
             self.request(method='PATCH',data=json.dumps({'version':'stale','claimsText':'1. test'}).encode())
         self.assertEqual(caught.exception.code,400)
+        moved = path.with_name('origin.pdf')
+        path.rename(moved)
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as missing:
+                self.request('/retry', method='POST')
+            self.assertEqual(missing.exception.code,404)
+            message=json.loads(missing.exception.read())['error']
+            self.assertIn('原始 PDF 文件不存在',message)
+            self.assertIn('original.pdf',message)
+        finally:
+            moved.rename(path)
 
 
 if __name__=='__main__':unittest.main()
