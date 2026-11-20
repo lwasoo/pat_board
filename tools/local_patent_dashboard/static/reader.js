@@ -32,9 +32,24 @@ function renderBasic() {
 }
 function claimHTML(text) {
   const refs=new Map((analysis().references || []).map(r=>[r.number,r]));
-  return esc(text).replace(/([（(])(\d{1,5}[a-zA-Z]?)([）)])/g,(full,l,n,r)=>refs.has(n)?`<button class="reference ${state.selected===n?'selected':''}" data-reference="${n}" title="${esc(refs.get(n).name)}：查看附图中的候选编号 ${n}">${l}${n}${r}</button>`:full)
-    .replace(/其特征在于/g,'<span class="characterizing">其特征在于</span>');
+  const raw=String(text || '');
+  let output='',cursor=0;
+  const pattern=/([（(])\s*(\d{1,5}[a-zA-Z]?)\s*([）)])|(\d{1,5}[a-zA-Z]?)/g;
+  for(const match of raw.matchAll(pattern)) {
+    const number=match[2] || match[4],reference=refs.get(number),index=match.index;
+    output+=esc(raw.slice(cursor,index));
+    const prefix=raw.slice(Math.max(0,index-90),index).trim().replace(/\s+/g,' ').toLowerCase();
+    const name=String(reference?.name || '').replace(/\s+/g,' ').toLowerCase();
+    const wholeNumber=!/[0-9A-Za-z]/.test(raw[index-1] || '') && !/[0-9A-Za-z]/.test(raw[index+match[0].length] || '');
+    const named=reference && (prefix.endsWith(name) || prefix.replace(/s$/,'').endsWith(name.replace(/s$/,'')));
+    const linked=reference && (match[2] || (wholeNumber && named));
+    output+=linked?`<button class="reference ${state.selected===number?'selected':''}" data-reference="${number}" title="${esc(reference.name)}：查看附图中的候选编号 ${number}">${esc(match[0])}</button>`:esc(match[0]);
+    cursor=index+match[0].length;
+  }
+  output+=esc(raw.slice(cursor));
+  return output.replace(/其特征在于/g,'<span class="characterizing">其特征在于</span>');
 }
+
 function renderClaims(side) {
   const missing=requireDocument(); if(missing)return missing;
   const claims=analysis().claims || [], filter=state.filters[side];
@@ -59,7 +74,7 @@ function renderDrawings(side) {
   state.page[side]=target.number;
   const reference=(a.references || []).find(r=>r.number===state.selected);
   const matches=reference?.matches.filter(m=>m.page===target.number) || [];
-  return `<div class="figure-toolbar"><select data-page aria-label="选择附图页面">${pages.map(p=>`<option value="${p.number}" ${p.number===target.number?'selected':''}>第 ${p.number} 页${p.section==='drawings'?' · 附图':''}</option>`).join('')}</select><button data-clear-annotations>撤销本页人工标注</button><button data-annotate>${state.annotation?'取消手工标注':'＋ 手工标注图号'}</button><span class="muted">${figures.length} 页附图 / 共 ${pages.length} 页</span></div>`+
+  return `<div class="figure-toolbar"><select data-page aria-label="选择附图页面">${pages.map(p=>`<option value="${p.number}" ${p.number===target.number?'selected':''}>第 ${p.number} 页 · ${(p.sections || [p.section]).map(k=>tabs[k] || k).join(' / ')}</option>`).join('')}</select><button data-clear-annotations>撤销本页人工标注</button><button data-annotate>${state.annotation?'取消手工标注':'＋ 手工标注图号'}</button><span class="muted">${figures.length} 页附图 / 共 ${pages.length} 页</span></div>`+
     (reference?`<div class="notice">当前部件：<b>${esc(reference.name)} (${esc(reference.number)})</b> · 本页 ${matches.length} 个候选位置。${matches.length?'请对照引线和原图核对。':'未找到匹配位置，可切换页面或手工标注。'}</div>`:'<div class="notice">点击另一栏权利要求中的部件编号，可高亮本页候选位置。</div>')+
     (state.annotation?'<p class="muted">点击图中编号位置，再输入正确的编号。手工标注会保存在当前 PDF 的识别结果中。</p>':'')+
     `<div class="figure-page ${state.annotation?'annotating':''}" data-figure="${target.number}"><img src="${docURL('/page')}&page=${target.number}" alt="专利 PDF 第 ${target.number} 页" draggable="false">${matches.map(m=>`<span class="number-box ${m.source==='manual'?'manual':''}" title="${esc(m.text)}" style="left:${Math.max(0,m.box[0]-.004)*100}%;top:${Math.max(0,m.box[1]-.004)*100}%;width:${(m.box[2]+.008)*100}%;height:${(m.box[3]+.008)*100}%"></span>`).join('')}</div><p class="figure-caption">第 ${target.number} 页 · ${target.ocr?'扫描页 OCR':'PDF 文字提取'} · 黄色虚线为候选位置，绿色为人工补标</p>`;
@@ -126,8 +141,8 @@ function statusUI() {
   $('retry').hidden=!d || busy;$('review').hidden=!d || a.status!=='ready';$('download').hidden=!d;
   $('download').href=docURL('/file');$('download').download=d?.fileName || '专利.pdf';
   $('upload').textContent=d?'↑ 更换 PDF':'↑ 上传专利 PDF';
-  $('documentStatus').classList.toggle('error',a.status==='failed' || a.status==='interrupted');
-  $('documentStatus').innerHTML=!d?'还没有专利文件 · 上传 PDF 后会按基本信息、权利要求、说明书、附图分类。':`<span>${esc(d.fileName)}</span> · ${esc(a.message || '待识别')}${busy?`<progress value="${Number(a.progress || 0)}" max="100"></progress>`:''}${a.warnings?.length?` · ${a.warnings.length} 项待核对`:''}`;
+  $('documentStatus').classList.toggle('error',a.status==='failed' || a.status==='interrupted' || a.quality?.passed===false);
+  $('documentStatus').innerHTML=!d?'还没有专利文件 · 上传 PDF 后会按基本信息、权利要求、说明书、附图分类。':`<span>${esc(d.fileName)}</span> · ${esc(a.message || '待识别')}${busy?`<progress value="${Number(a.progress || 0)}" max="100"></progress>`:''}${a.needsReanalysis?' · 识别规则已更新，请点击“重新识别”':''}${a.warnings?.length?` · ${a.warnings.length} 项待核对`:''}`;
   clearTimeout(state.timer);
   if(busy)state.timer=setTimeout(()=>refreshDocument().catch(e=>{toast(e.message);state.timer=setTimeout(()=>refreshDocument().catch(e=>toast(e.message)),5000);}),1500);
 }

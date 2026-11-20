@@ -127,6 +127,13 @@ class DocumentTests(unittest.TestCase):
             self.assertEqual(caught.exception.code,400)
         self.assertIsNone(self.request()['document'])
         self.request(method='POST',data=sample_pdf());self.wait_ready()
+        self.assertFalse(self.request()['document']['analysis']['needsReanalysis'])
+        record=documents.document_record(self.id)
+        path=documents.managed_path(record['object_path'])
+        old=documents.read_analysis(path)
+        old['parserVersion']=1
+        documents.save_analysis(path,old)
+        self.assertTrue(self.request()['document']['analysis']['needsReanalysis'])
         with self.assertRaises(urllib.error.HTTPError) as caught:
             self.request(method='PATCH',data=json.dumps({'version':'stale','claimsText':'1. test'}).encode())
         self.assertEqual(caught.exception.code,400)

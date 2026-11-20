@@ -20,6 +20,10 @@ from pathlib import Path
 
 import dashboard_config as settings
 from dashboard_database import connect
+from dashboard_patent_text import (
+    PARSER_VERSION, classify_page, jurisdiction, reading_order, ocr_reading_order,
+    split_sections, parse_claims, extract_metadata, part_references, check_declared_counts,
+)
 
 MAX_PDF_SIZE = 50 * 1024 * 1024
 MAX_PAGES = 150
@@ -139,6 +143,7 @@ def document_status(patent_id):
             return {"document": None, "capabilities": capabilities()}
         path = managed_path(row["object_path"])
         analysis = read_analysis(path)
+        analysis["needsReanalysis"] = analysis.get("status") == "ready" and analysis.get("parserVersion", 1) < PARSER_VERSION
         if analysis.get("status") in {"queued", "processing"} and str(path) not in _ACTIVE:
             analysis = {**analysis, "status": "interrupted", "message": "上次识别被中断，请重新识别。"}
         return {"document": {"fileName": row["file_name"], "size": row["size"],
@@ -221,11 +226,11 @@ def delete_document(patent_id):
         return {"deleted": bool(row)}
 
 
-def ocr_page(pixmap, psm=3, digits=False):
+def ocr_page(pixmap, psm=3, digits=False, language=None):
     command = ocr_command()
     if not command:
         raise ValueError("未安装 Tesseract OCR；扫描页需要安装中文和英文识别模型。")
-    command += ["stdin", "stdout", "-l", "eng" if digits else "chi_sim+eng", "--psm", str(psm)]
+    command += ["stdin", "stdout", "-l", "eng" if digits else (language or "chi_sim+eng"), "--psm", str(psm)]
     if digits:
         command += ["-c", "tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyz"]
     result = subprocess.run(command + ["-c", "tessedit_create_tsv=1", "-c", "tessedit_create_txt=0"], input=pixmap.tobytes("png"),
@@ -254,47 +259,11 @@ def ocr_page(pixmap, psm=3, digits=False):
 
 
 def page_section(text, previous):
-    header = re.sub(r"\s+", "", text[:300])
-    if "说明书附图" in header or re.search(r"(?:DRAWINGS|Drawings)", text[:120]):
-        return "drawings"
-    if "权利要求书" in header or re.search(r"\bCLAIMS\b", text[:120], re.I):
-        return "claims"
-    if "说明书" in header or re.search(r"\bDESCRIPTION\b", text[:120], re.I):
-        return "description"
-    return previous or "basic"
-
-
-def parse_claims(text):
-    text = re.sub(r"(?m)^\s*(?:权\s*利\s*要\s*求\s*书|CN\s*\d[\w\s]*|\d+\s*/\s*\d+\s*页)\s*$", "", text)
-    starts = list(re.finditer(r"(?m)^\s*(\d{1,3})\s*[.．、]\s*(?=\S)", text))
-    claims = []
-    for index, match in enumerate(starts):
-        body = text[match.end():starts[index+1].start() if index+1 < len(starts) else len(text)].strip()
-        body = re.sub(r"\s*\n\s*", " ", body)
-        body = re.sub(r"(?<=[\u3400-\u9fff]) +(?=[\u3400-\u9fff])", "", body)
-        lead = body[:180]
-        dependent = bool(re.search(r"(?:根据|按照|如|引用).*?权利要求|\b(?:claim|claims)\s+\d", lead, re.I))
-        dependencies = []
-        reference = re.search(r"权利要求\s*([\d\s、,，及或至到\-—～~]+)", lead)
-        if reference:
-            for first, last in re.findall(r"(\d+)\s*[至到\-—～~]\s*(\d+)", reference[1]):
-                dependencies.extend(range(int(first), min(int(last), int(first)+100)+1))
-            dependencies.extend(int(n) for n in re.findall(r"\d+", reference[1]))
-        number = int(match[1])
-        claims.append({"number": number, "text": body, "kind": "dependent" if dependent else "independent",
-                       "dependencies": sorted({n for n in dependencies if 0 < n < number})})
-    return claims
+    return classify_page(text, previous)
 
 
 def extract_references(claims, description):
-    refs = {}
-    text = "\n".join(c["text"] for c in claims) + "\n" + description
-    for match in re.finditer(r"([\u3400-\u9fffA-Za-z][\u3400-\u9fffA-Za-z\s]{0,25})[（(]\s*(\d{1,5}[a-zA-Z]?)\s*[)）]", text):
-        name = re.split(r"[，。；：、\n]|包括|具有|所述|其中|以及|和|与|设有|设置有", match[1])[-1].strip()
-        number = match[2]
-        if name:
-            refs.setdefault(number, {"number": number, "name": name, "matches": []})
-    return list(refs.values())
+    return part_references(claims, description)
 
 
 def link_references(references, pages):
@@ -311,44 +280,34 @@ def link_references(references, pages):
     return references
 
 
-def extract_metadata(text):
-    compact = re.sub(r"[ \t]+", "", text)
-    def tagged(number):
-        match = re.search(r"[（(\[]"+number+r"[)）\]][^\n]*\n?([^\n]*)", compact)
-        if not match:
-            return ""
-        line = match[0]
-        line = re.sub(r"^[（(\[]\d+[)）\]][^\n]*?(?:名称|申请号|申请日|申请人|专利权人|发明人|分类号)[:：]?", "", line)
-        return re.split(r"[（(\[]\d{2}[)）\]]", line)[0].strip()[:500]
-    publication = re.search(r"\bCN\s*\d{7,12}\s*[A-Z]\d?", text)
-    return {"title": tagged("54"), "applicationNumber": tagged("21"), "applicationDate": tagged("22"),
-            "owner": tagged("71") or tagged("73"), "inventors": tagged("72"),
-            "classification": tagged("51"), "abstract": tagged("57"),
-            "publicationNumber": re.sub(r"\s+", "", publication[0]) if publication else ""}
-
-
 def extract_document(path):
-    result = {"status": "processing", "progress": 0, "pages": [], "claims": [], "references": [], "warnings": []}
+    result = {"status": "processing", "progress": 0, "pages": [], "claims": [], "references": [], "warnings": [], "parserVersion": PARSER_VERSION}
     try:
         engine = pdf_engine()
         sections = {"basic": [], "claims": [], "description": [], "drawings": []}
         previous = None
         with engine.open(path) as pdf:
             result["pageCount"] = len(pdf)
+            country = jurisdiction(pdf[0].get_text(sort=True))
+            section_pages = {key: [] for key in sections}
             for index, page in enumerate(pdf):
                 # Replacement/deletion invalidates this job; never resurrect old records.
                 if not path.is_file():
                     return
-                text = page.get_text(sort=True)
+                raw = page.get_text(sort=True)
+                text, layout = reading_order(page, country)
                 used_ocr = False
                 uncertain = []
                 pix = None
-                if len(re.sub(r"\s", "", text)) < 60 and page_section(text, None) != "drawings":
+                native_body = len(re.findall(r"[\u3400-\u9fff]", text)) >= 8
+                if len(re.sub(r"\s", "", raw)) < 60 and not native_body and page_section(raw, None) != "drawings":
                     pix = render_for_ocr(page)
                     try:
-                        recognized, tokens = ocr_page(pix)
+                        recognized, tokens = ocr_page(pix, language="eng" if country == "US" else None)
                         if recognized.strip():
-                            text = recognized
+                            raw = recognized
+                            country = country or jurisdiction(recognized)
+                            text, layout = ocr_reading_order(tokens, country, recognized)
                             used_ocr = True
                             uncertain = [w for w in tokens if w["confidence"] < 60][:100]
                             if uncertain:
@@ -357,19 +316,22 @@ def extract_document(path):
                             result["warnings"].append(f"第 {index+1} 页未识别出文字，请对照原 PDF。")
                     except (ValueError, subprocess.TimeoutExpired) as exc:
                         result["warnings"].append(f"第 {index+1} 页：{exc}")
-                section = page_section(text, previous)
-                previous = section
+                parts, previous = split_sections(text, previous, raw, index+1)
+                page_sections = list(dict.fromkeys(part["section"] for part in parts))
+                section = next(s for s in ("claims", "description", "drawings", "basic") if s in page_sections)
                 labels = []
                 if section == "drawings":
                     width, height = page.rect.width, page.rect.height
                     for word in page.get_text("words"):
+                        if word[1] < .12*height or word[3] > .94*height:
+                            continue
                         number = word[4].strip("()（）.,")
                         if re.fullmatch(r"\d{1,5}[a-zA-Z]?", number):
                             labels.append({"text": number, "box": [word[0]/width, word[1]/height,
                                 (word[2]-word[0])/width, (word[3]-word[1])/height],
                                 "source": "pdf", "confidence": 100})
                     try:
-                        pix = pix or render_page(page, 2.5)
+                        pix = pix or render_for_ocr(page)
                         candidates = []
                         for segmentation in (11, 6):
                             _, detected = ocr_page(pix, psm=segmentation, digits=True)
@@ -380,23 +342,32 @@ def extract_document(path):
                                     labels.append(label)
                     except (ValueError, subprocess.TimeoutExpired) as exc:
                         result["warnings"].append(f"第 {index+1} 页图号：{exc}")
-                sections[section].append(text)
+                for part in parts:
+                    sections[part["section"]].append(part["text"])
+                    if index+1 not in section_pages[part["section"]]:
+                        section_pages[part["section"]].append(index+1)
                 result["pages"].append({"number": index+1, "section": section, "text": text,
-                    "ocr": used_ocr, "labels": labels, "uncertainWords": uncertain})
+                    "ocr": used_ocr, "labels": labels, "uncertainWords": uncertain,
+                    "sections": page_sections, "layout": layout})
                 result.update(progress=round((index+1)/len(pdf)*100), message=f"已识别 {index+1}/{len(pdf)} 页")
                 with _LOCK:
                     if path.is_file():
                         save_analysis(path, result)
+        result["sectionPages"] = section_pages
+        result["jurisdiction"] = country
         result["metadata"] = extract_metadata("\n".join(sections["basic"]))
         result["description"] = "\n\n".join(sections["description"])
         result["claims"] = parse_claims("\n".join(sections["claims"]))
         result["references"] = link_references(extract_references(result["claims"], result["description"]), result["pages"])
+        result["quality"], count_warnings = check_declared_counts("\n".join(sections["basic"]), section_pages, len(result["claims"]))
+        result["expectedClaimCount"] = result["quality"]["expectedClaimCount"]
+        result["warnings"].extend(count_warnings)
         unmatched = sum(not r["matches"] for r in result["references"])
         if unmatched:
             result["warnings"].append(f"{unmatched} 个部件编号未在附图中定位，可对照原图补标。")
         if not result["claims"]:
             result["warnings"].append("未可靠识别权利要求，请对照原 PDF 校对或补充。")
-        result.update(status="ready", message="识别完成，请核对文字及附图编号。", progress=100)
+        result.update(status="ready", message="识别完成，请核对文字及附图编号。" if result["quality"]["passed"] is not False else "章节或项数与首页不一致，请对照 PDF 核对。", progress=100)
     except Exception as exc:
         result.update(status="failed", message=f"识别未完成：{exc}")
     finally:
