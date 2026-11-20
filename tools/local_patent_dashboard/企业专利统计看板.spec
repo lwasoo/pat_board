@@ -2,6 +2,8 @@
 from pathlib import Path
 
 root = Path(SPECPATH)
+ocr_models = root / "ocr" / "tessdata"
+model_datas = [(str(ocr_models), "ocr/tessdata")] if ocr_models.is_dir() else []
 
 a = Analysis(
     [str(root / "local_dashboard.py")],
@@ -9,7 +11,7 @@ a = Analysis(
     binaries=[],
     datas=[
         (str(root / "static"), "static"),
-    ],
+    ] + model_datas,
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

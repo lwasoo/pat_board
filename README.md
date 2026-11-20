@@ -11,11 +11,12 @@
 - 包含完整案件字段的 Excel 模板下载、批量导入和批量导出；费用汇总按一个专利一行，并兼容旧“缴费台账”和既有“专利家族/费用”格式
 - 专利字段手动增删改查
 - 专利族、月度/季度/年度统计
-- 缴费台账和临期提醒
+- 专利 PDF 本地上传、左右分栏与第二屏阅读、独权/从权区分及附图编号候选联动
+- 专利下的年费/其他费用子项、全局缴费台账和临期提醒
 - 企业微信群机器人测试消息及每日定时推送
 
 ## 源码
 
-单机版源码位于 `tools/local_patent_dashboard`。运行 `local_dashboard.py` 可直接启动；需要重新生成 EXE 时使用同目录的 PyInstaller spec 文件。
+单机版源码位于 `tools/local_patent_dashboard`。先安装该目录的 `requirements.txt`，再运行 `local_dashboard.py`。扫描版 PDF 还需要安装 Tesseract 并运行 `setup_ocr.py`；完整说明见 [源码开发与 PDF/OCR 安装](tools/local_patent_dashboard/README.md)。需要重新生成 EXE 时使用同目录的 PyInstaller spec 文件。
 
-专利 PDF 由用户自行保管，本项目不会删除外部 PDF 文件。
+上传的专利 PDF 与识别结果保存在本机 `data/documents`。更换 PDF 会替换本系统保存的旧版本；删除专利会清理其上传文件，不会删除外部 PDF。备份时需保存整个 `data` 目录。

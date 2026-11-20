@@ -1,0 +1,474 @@
+"""Managed patent PDFs, local OCR and reviewable claim/drawing references.
+
+Uploaded files stay local. Extraction is advisory and never overwrites ledger fields.
+"""
+from __future__ import annotations
+
+import csv
+import io
+import json
+import math
+import os
+import re
+import shutil
+import subprocess
+import threading
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
+from pathlib import Path
+
+import dashboard_config as settings
+from dashboard_database import connect
+
+MAX_PDF_SIZE = 50 * 1024 * 1024
+MAX_PAGES = 150
+_WORKER = ThreadPoolExecutor(max_workers=1, thread_name_prefix="patent-ocr")
+_LOCK = threading.RLock()
+_ACTIVE: set[str] = set()
+
+
+def pdf_engine():
+    try:
+        import pymupdf
+        return pymupdf
+    except ImportError as exc:
+        raise ValueError("请先安装 PDF 组件：python -m pip install -r requirements.txt") from exc
+
+
+def render_page(page, scale):
+    """Bound raster memory even for unusually large PDF page dimensions."""
+    longest = max(page.rect.width, page.rect.height)
+    if not math.isfinite(longest) or longest <= 0:
+        raise ValueError("PDF 页面尺寸不正确。")
+    scale = min(scale, 3000 / longest)
+    return page.get_pixmap(matrix=pdf_engine().Matrix(scale, scale), alpha=False)
+
+
+def render_for_ocr(page):
+    """Preserve a full-page scan's native pixels instead of resampling its glyphs."""
+    scale = 2.5
+    page_area = page.rect.width * page.rect.height
+    for image in page.get_image_info():
+        x0, y0, x1, y1 = image["bbox"]
+        width, height = x1-x0, y1-y0
+        if width > 0 and height > 0 and width*height >= .8*page_area:
+            scale = max(1, min(image["width"]/width, image["height"]/height))
+            break
+    return render_page(page, scale)
+
+
+def ocr_command():
+    executable = os.environ.get("PATENT_TESSERACT_CMD") or shutil.which("tesseract")
+    if not executable and os.name == "nt":
+        candidate = Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Tesseract-OCR/tesseract.exe"
+        if candidate.is_file():
+            executable = str(candidate)
+    model_dir = os.environ.get("PATENT_TESSDATA_DIR")
+    if not model_dir:
+        bundled = settings.resource_path("ocr/tessdata")
+        if (bundled / "chi_sim.traineddata").is_file():
+            model_dir = str(bundled)
+    command = [executable] if executable else []
+    if model_dir:
+        command += ["--tessdata-dir", model_dir]
+    return command
+
+
+def capabilities():
+    try:
+        pdf_engine()
+        pdf = True
+    except ValueError:
+        pdf = False
+    cmd = ocr_command()
+    languages = []
+    if cmd:
+        try:
+            result = subprocess.run(cmd + ["--list-langs"], capture_output=True, text=True, timeout=10)
+            languages = [line.strip() for line in result.stdout.splitlines()[1:] if line.strip()]
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return {"pdf": pdf, "ocr": "chi_sim" in languages and "eng" in languages,
+            "languages": languages, "maxBytes": MAX_PDF_SIZE, "maxPages": MAX_PAGES}
+
+
+def document_record(patent_id):
+    with closing(connect()) as conn:
+        patent = conn.execute("SELECT id FROM patents WHERE id=?", (patent_id,)).fetchone()
+        if not patent:
+            raise FileNotFoundError("专利不存在。")
+        row = conn.execute("SELECT * FROM patent_documents WHERE patent_id=?", (patent_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def managed_path(relative):
+    base = settings.DATA_DIR.resolve()
+    path = (base / relative).resolve()
+    if base not in path.parents:
+        raise ValueError("文件路径不正确。")
+    return path
+
+
+def remove_managed_document(relative):
+    # Remove only this application's UUID document directory, never external PDFs.
+    path = managed_path(relative)
+    if path.parent.parent == (settings.DATA_DIR / "documents").resolve() and re.fullmatch(r"[0-9a-f]{32}", path.parent.name):
+        with _LOCK:
+            shutil.rmtree(path.parent, ignore_errors=True)
+
+
+def read_analysis(path):
+    try:
+        return json.loads(path.with_name("analysis.json").read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        return {"status": "interrupted", "message": "识别结果未保存，请重新识别。"}
+
+
+def save_analysis(path, result):
+    target = path.with_name("analysis.json")
+    temporary = target.with_suffix(".tmp")
+    temporary.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(target)
+
+
+def document_status(patent_id):
+    with _LOCK:
+        row = document_record(patent_id)
+        if not row:
+            return {"document": None, "capabilities": capabilities()}
+        path = managed_path(row["object_path"])
+        analysis = read_analysis(path)
+        if analysis.get("status") in {"queued", "processing"} and str(path) not in _ACTIVE:
+            analysis = {**analysis, "status": "interrupted", "message": "上次识别被中断，请重新识别。"}
+        return {"document": {"fileName": row["file_name"], "size": row["size"],
+                             "uploadedAt": row["uploaded_at"], "version": path.parent.name,
+                             "analysis": analysis}}
+
+
+def upload_document(patent_id, data, file_name):
+    if not data or len(data) > MAX_PDF_SIZE or not data.startswith(b"%PDF-"):
+        raise ValueError("请上传不超过 50 MB 的有效 PDF 文件。")
+    engine = pdf_engine()
+    try:
+        with engine.open(stream=data, filetype="pdf") as pdf:
+            if pdf.needs_pass or not 0 < len(pdf) <= MAX_PAGES:
+                raise ValueError("PDF 不能加密，且页数需在 1 至 150 页之间。")
+    except (RuntimeError, engine.FileDataError) as exc:
+        raise ValueError("PDF 文件损坏或无法读取。") from exc
+    with _LOCK:
+        previous = document_record(patent_id)
+        if len(_ACTIVE) >= 4:
+            raise ValueError("已有多个文件等待识别，请稍后再上传。")
+        directory = settings.DATA_DIR / "documents" / uuid.uuid4().hex
+        directory.mkdir(parents=True)
+        path = directory / "original.pdf"
+        path.write_bytes(data)
+        relative = path.relative_to(settings.DATA_DIR).as_posix()
+        try:
+            save_analysis(path, {"status": "queued", "message": "等待识别", "progress": 0})
+            with closing(connect()) as conn, conn:
+                conn.execute("""INSERT INTO patent_documents(patent_id,object_path,file_name,content_type,size)
+                    VALUES(?,?,?,'application/pdf',?) ON CONFLICT(patent_id) DO UPDATE SET
+                    object_path=excluded.object_path,file_name=excluded.file_name,size=excluded.size,
+                    content_type=excluded.content_type,uploaded_at=CURRENT_TIMESTAMP""",
+                    (patent_id, relative, Path(file_name.replace('\\', '/')).name[:200] or "专利.pdf", len(data)))
+        except Exception:
+            shutil.rmtree(directory, ignore_errors=True)
+            raise
+        queue_extraction(path)
+        if previous:
+            # An in-flight older job cleans itself up when it observes replacement.
+            old = managed_path(previous["object_path"])
+            if str(old) not in _ACTIVE:
+                remove_managed_document(previous["object_path"])
+        return document_status(patent_id)
+
+
+def queue_extraction(path):
+    key = str(path)
+    if key in _ACTIVE:
+        return
+    if len(_ACTIVE) >= 4:
+        raise ValueError("识别队列已满，请稍后再试。")
+    _ACTIVE.add(key)
+    _WORKER.submit(extract_document, path)
+
+
+def retry_document(patent_id):
+    with _LOCK:
+        row = document_record(patent_id)
+        if not row:
+            raise FileNotFoundError("尚未上传 PDF。")
+        path = managed_path(row["object_path"])
+        if str(path) not in _ACTIVE:
+            if len(_ACTIVE) >= 4:
+                raise ValueError("识别队列已满，请稍后再试。")
+            save_analysis(path, {"status": "queued", "progress": 0, "message": "等待重新识别"})
+            queue_extraction(path)
+        return document_status(patent_id)
+
+
+def delete_document(patent_id):
+    with _LOCK:
+        row = document_record(patent_id)
+        with closing(connect()) as conn, conn:
+            conn.execute("DELETE FROM patent_documents WHERE patent_id=?", (patent_id,))
+        if row:
+            path = managed_path(row["object_path"])
+            if str(path) not in _ACTIVE:
+                remove_managed_document(row["object_path"])
+        return {"deleted": bool(row)}
+
+
+def ocr_page(pixmap, psm=3, digits=False):
+    command = ocr_command()
+    if not command:
+        raise ValueError("未安装 Tesseract OCR；扫描页需要安装中文和英文识别模型。")
+    command += ["stdin", "stdout", "-l", "eng" if digits else "chi_sim+eng", "--psm", str(psm)]
+    if digits:
+        command += ["-c", "tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyz"]
+    result = subprocess.run(command + ["-c", "tessedit_create_tsv=1", "-c", "tessedit_create_txt=0"], input=pixmap.tobytes("png"),
+                            capture_output=True, timeout=90)
+    if result.returncode:
+        raise ValueError("OCR 未能完成，请确认 Tesseract 及 chi_sim、eng 模型已安装。")
+    if not result.stdout.startswith(b"level\t"):
+        raise ValueError("OCR 未返回文字坐标，请检查 Tesseract 配置。")
+    rows = []
+    lines = {}
+    for item in csv.DictReader(io.StringIO(result.stdout.decode("utf-8")), delimiter="\t"):
+        text = (item.get("text") or "").strip()
+        if not text:
+            continue
+        confidence = float(item["conf"])
+        box = [int(item["left"]) / pixmap.width, int(item["top"]) / pixmap.height,
+               int(item["width"]) / pixmap.width, int(item["height"]) / pixmap.height]
+        rows.append({"text": text, "confidence": round(confidence, 1), "box": box, "source": "ocr"})
+        key = (item["block_num"], item["par_num"], item["line_num"])
+        lines.setdefault(key, []).append(text)
+    text = "\n".join(" ".join(words) for words in lines.values())
+    # Chinese tokens have no inter-word spaces in a patent's logical text.
+    text = re.sub(r"(?<=[\u3400-\u9fff]) +(?=[\u3400-\u9fff])", "", text)
+    text = re.sub(r"([（(])\s*(\d{1,5}[a-zA-Z]?)\s*([)）])", r"\1\2\3", text)
+    return text, rows
+
+
+def page_section(text, previous):
+    header = re.sub(r"\s+", "", text[:300])
+    if "说明书附图" in header or re.search(r"(?:DRAWINGS|Drawings)", text[:120]):
+        return "drawings"
+    if "权利要求书" in header or re.search(r"\bCLAIMS\b", text[:120], re.I):
+        return "claims"
+    if "说明书" in header or re.search(r"\bDESCRIPTION\b", text[:120], re.I):
+        return "description"
+    return previous or "basic"
+
+
+def parse_claims(text):
+    text = re.sub(r"(?m)^\s*(?:权\s*利\s*要\s*求\s*书|CN\s*\d[\w\s]*|\d+\s*/\s*\d+\s*页)\s*$", "", text)
+    starts = list(re.finditer(r"(?m)^\s*(\d{1,3})\s*[.．、]\s*(?=\S)", text))
+    claims = []
+    for index, match in enumerate(starts):
+        body = text[match.end():starts[index+1].start() if index+1 < len(starts) else len(text)].strip()
+        body = re.sub(r"\s*\n\s*", " ", body)
+        body = re.sub(r"(?<=[\u3400-\u9fff]) +(?=[\u3400-\u9fff])", "", body)
+        lead = body[:180]
+        dependent = bool(re.search(r"(?:根据|按照|如|引用).*?权利要求|\b(?:claim|claims)\s+\d", lead, re.I))
+        dependencies = []
+        reference = re.search(r"权利要求\s*([\d\s、,，及或至到\-—～~]+)", lead)
+        if reference:
+            for first, last in re.findall(r"(\d+)\s*[至到\-—～~]\s*(\d+)", reference[1]):
+                dependencies.extend(range(int(first), min(int(last), int(first)+100)+1))
+            dependencies.extend(int(n) for n in re.findall(r"\d+", reference[1]))
+        number = int(match[1])
+        claims.append({"number": number, "text": body, "kind": "dependent" if dependent else "independent",
+                       "dependencies": sorted({n for n in dependencies if 0 < n < number})})
+    return claims
+
+
+def extract_references(claims, description):
+    refs = {}
+    text = "\n".join(c["text"] for c in claims) + "\n" + description
+    for match in re.finditer(r"([\u3400-\u9fffA-Za-z][\u3400-\u9fffA-Za-z\s]{0,25})[（(]\s*(\d{1,5}[a-zA-Z]?)\s*[)）]", text):
+        name = re.split(r"[，。；：、\n]|包括|具有|所述|其中|以及|和|与|设有|设置有", match[1])[-1].strip()
+        number = match[2]
+        if name:
+            refs.setdefault(number, {"number": number, "name": name, "matches": []})
+    return list(refs.values())
+
+
+def link_references(references, pages):
+    for reference in references:
+        matches = []
+        for page in pages:
+            if page["section"] != "drawings":
+                continue
+            candidates = [label for label in page.get("labels", []) if label["text"] == reference["number"]]
+            manual = [label for label in candidates if label["source"] == "manual"]
+            matches.extend(dict(label, page=page["number"]) for label in (manual or candidates))
+        reference["matches"] = sorted(matches, key=lambda m: (m["source"] != "manual", m["page"], -m["confidence"]))
+        reference["status"] = "candidate" if reference["matches"] else "unmatched"
+    return references
+
+
+def extract_metadata(text):
+    compact = re.sub(r"[ \t]+", "", text)
+    def tagged(number):
+        match = re.search(r"[（(\[]"+number+r"[)）\]][^\n]*\n?([^\n]*)", compact)
+        if not match:
+            return ""
+        line = match[0]
+        line = re.sub(r"^[（(\[]\d+[)）\]][^\n]*?(?:名称|申请号|申请日|申请人|专利权人|发明人|分类号)[:：]?", "", line)
+        return re.split(r"[（(\[]\d{2}[)）\]]", line)[0].strip()[:500]
+    publication = re.search(r"\bCN\s*\d{7,12}\s*[A-Z]\d?", text)
+    return {"title": tagged("54"), "applicationNumber": tagged("21"), "applicationDate": tagged("22"),
+            "owner": tagged("71") or tagged("73"), "inventors": tagged("72"),
+            "classification": tagged("51"), "abstract": tagged("57"),
+            "publicationNumber": re.sub(r"\s+", "", publication[0]) if publication else ""}
+
+
+def extract_document(path):
+    result = {"status": "processing", "progress": 0, "pages": [], "claims": [], "references": [], "warnings": []}
+    try:
+        engine = pdf_engine()
+        sections = {"basic": [], "claims": [], "description": [], "drawings": []}
+        previous = None
+        with engine.open(path) as pdf:
+            result["pageCount"] = len(pdf)
+            for index, page in enumerate(pdf):
+                # Replacement/deletion invalidates this job; never resurrect old records.
+                if not path.is_file():
+                    return
+                text = page.get_text(sort=True)
+                used_ocr = False
+                uncertain = []
+                pix = None
+                if len(re.sub(r"\s", "", text)) < 60 and page_section(text, None) != "drawings":
+                    pix = render_for_ocr(page)
+                    try:
+                        recognized, tokens = ocr_page(pix)
+                        if recognized.strip():
+                            text = recognized
+                            used_ocr = True
+                            uncertain = [w for w in tokens if w["confidence"] < 60][:100]
+                            if uncertain:
+                                result["warnings"].append(f"第 {index+1} 页有 {len(uncertain)} 个低置信度文字片段，请对照原 PDF。")
+                        elif not text.strip():
+                            result["warnings"].append(f"第 {index+1} 页未识别出文字，请对照原 PDF。")
+                    except (ValueError, subprocess.TimeoutExpired) as exc:
+                        result["warnings"].append(f"第 {index+1} 页：{exc}")
+                section = page_section(text, previous)
+                previous = section
+                labels = []
+                if section == "drawings":
+                    width, height = page.rect.width, page.rect.height
+                    for word in page.get_text("words"):
+                        number = word[4].strip("()（）.,")
+                        if re.fullmatch(r"\d{1,5}[a-zA-Z]?", number):
+                            labels.append({"text": number, "box": [word[0]/width, word[1]/height,
+                                (word[2]-word[0])/width, (word[3]-word[1])/height],
+                                "source": "pdf", "confidence": 100})
+                    try:
+                        pix = pix or render_page(page, 2.5)
+                        candidates = []
+                        for segmentation in (11, 6):
+                            _, detected = ocr_page(pix, psm=segmentation, digits=True)
+                            candidates.extend(detected)
+                        for label in candidates:
+                            if re.fullmatch(r"\d{1,5}[a-zA-Z]?", label["text"]) and label["confidence"] >= 50:
+                                if not any(l["text"] == label["text"] and abs(l["box"][0]-label["box"][0]) < .03 and abs(l["box"][1]-label["box"][1]) < .03 for l in labels):
+                                    labels.append(label)
+                    except (ValueError, subprocess.TimeoutExpired) as exc:
+                        result["warnings"].append(f"第 {index+1} 页图号：{exc}")
+                sections[section].append(text)
+                result["pages"].append({"number": index+1, "section": section, "text": text,
+                    "ocr": used_ocr, "labels": labels, "uncertainWords": uncertain})
+                result.update(progress=round((index+1)/len(pdf)*100), message=f"已识别 {index+1}/{len(pdf)} 页")
+                with _LOCK:
+                    if path.is_file():
+                        save_analysis(path, result)
+        result["metadata"] = extract_metadata("\n".join(sections["basic"]))
+        result["description"] = "\n\n".join(sections["description"])
+        result["claims"] = parse_claims("\n".join(sections["claims"]))
+        result["references"] = link_references(extract_references(result["claims"], result["description"]), result["pages"])
+        unmatched = sum(not r["matches"] for r in result["references"])
+        if unmatched:
+            result["warnings"].append(f"{unmatched} 个部件编号未在附图中定位，可对照原图补标。")
+        if not result["claims"]:
+            result["warnings"].append("未可靠识别权利要求，请对照原 PDF 校对或补充。")
+        result.update(status="ready", message="识别完成，请核对文字及附图编号。", progress=100)
+    except Exception as exc:
+        result.update(status="failed", message=f"识别未完成：{exc}")
+    finally:
+        with _LOCK:
+            try:
+                if path.is_file():
+                    save_analysis(path, result)
+            finally:
+                _ACTIVE.discard(str(path))
+            with closing(connect()) as conn:
+                exists = conn.execute("SELECT 1 FROM patent_documents WHERE object_path=?",
+                    (path.relative_to(settings.DATA_DIR).as_posix(),)).fetchone()
+            if not exists:
+                remove_managed_document(path.relative_to(settings.DATA_DIR).as_posix())
+
+
+def document_file(patent_id, page=None, version=None):
+    row = document_record(patent_id)
+    if not row:
+        raise FileNotFoundError("尚未上传 PDF。")
+    path = managed_path(row["object_path"])
+    if version and version != path.parent.name:
+        raise FileNotFoundError("文件版本已更新，请刷新。")
+    if page is None:
+        return path.read_bytes(), "application/pdf", row["file_name"]
+    engine = pdf_engine()
+    with engine.open(path) as pdf:
+        if not 1 <= page <= len(pdf):
+            raise ValueError("页码超出范围。")
+        image = render_page(pdf[page-1], 1.6)
+        return image.tobytes("png"), "image/png", f"page-{page}.png"
+
+
+def correct_analysis(patent_id, payload):
+    with _LOCK:
+        row = document_record(patent_id)
+        if not row:
+            raise FileNotFoundError("尚未上传 PDF。")
+        path = managed_path(row["object_path"])
+        if payload.get("version") != path.parent.name:
+            raise ValueError("PDF 已更新，请刷新后再校对。")
+        result = read_analysis(path)
+        if result.get("status") != "ready" or str(path) in _ACTIVE:
+            raise ValueError("请等待识别完成后再校对。")
+        if "claimsText" in payload:
+            text = str(payload["claimsText"])[:200000]
+            claims = parse_claims(text)
+            if text.strip() and not claims:
+                raise ValueError("请按“1. …”逐条填写权利要求。")
+            result["claims"] = claims
+        if "description" in payload:
+            result["description"] = str(payload["description"])[:500000]
+        if "metadata" in payload:
+            data = payload["metadata"]
+            if not isinstance(data, dict):
+                raise ValueError("基本信息格式不正确。")
+            result["metadata"] = {key: str(data.get(key, ""))[:500] for key in extract_metadata("")}
+        if "clearAnnotations" in payload:
+            page = next((p for p in result["pages"] if p["number"] == int(payload["clearAnnotations"])), None)
+            if page is None:
+                raise ValueError("页码不正确。")
+            page["labels"] = [label for label in page["labels"] if label["source"] != "manual"]
+        if "annotation" in payload:
+            item = payload["annotation"]
+            page = next((p for p in result["pages"] if p["number"] == int(item["page"])), None)
+            number = str(item["number"])
+            box = [float(n) for n in item["box"]]
+            if page is None or not re.fullmatch(r"\d{1,5}[a-zA-Z]?", number) or len(box) != 4 or not all(math.isfinite(n) and 0 <= n <= 1 for n in box) or box[0]+box[2] > 1 or box[1]+box[3] > 1:
+                raise ValueError("图号标注不正确。")
+            page["section"] = "drawings"
+            page["labels"].append({"text": number, "box": box, "source": "manual", "confidence": 100})
+        result["references"] = link_references(extract_references(result["claims"], result.get("description", "")), result["pages"])
+        result["reviewed"] = True
+        save_analysis(path, result)
+        return document_status(patent_id)

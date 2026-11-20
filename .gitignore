@@ -11,3 +11,7 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# Local OCR models and development dependencies
+/tools/local_patent_dashboard/ocr/tessdata/
+/.venv/
