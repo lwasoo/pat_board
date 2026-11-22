@@ -5,6 +5,23 @@ const id = Number(query.get('id'));
 const tabs = {basic:'基本信息',claims:'权利要求',description:'说明书',drawings:'附图',pdf:'原 PDF',fees:'年费与费用'};
 const labels = {title:'专利名称',applicationNumber:'申请号',publicationNumber:'公开号/授权号',applicationDate:'申请日',owner:'申请人/权利人',inventors:'发明人',classification:'IPC 分类号',abstract:'摘要'};
 const state = {patent:null,document:null,fees:[],tabs:{left:'claims',right:'drawings'},filters:{left:'all',right:'all'},page:{left:1,right:1},selected:null,annotation:false,timer:null};
+async function applyRecognizedFields() {
+  const metadata=analysis().metadata || {}, changes={};
+  for (const key of ['title','applicationNumber','publicationNumber','applicationDate','owner','inventors']) {
+    if (metadata[key] && metadata[key]!==state.patent[key]) changes[key]=metadata[key];
+  }
+  if (!Object.keys(changes).length) return toast('没有需要更新的识别字段');
+  const preview=Object.entries(changes).map(([key,value])=>`${labels[key]}：${value}`).join('\n');
+  if (!confirm('将以下识别结果写入台账，请先核对：\n\n'+preview+'\n\n已有字段会被替换。')) return;
+  try {
+    await api('/api/patents?id='+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({...state.patent,...changes})});
+    Object.assign(state.patent,changes);render();toast('识别字段已同步到台账');
+  } catch(e) {toast(e.message);}
+}
+const syncFieldsButton=document.createElement('button');
+syncFieldsButton.textContent='识别字段写入台账';
+syncFieldsButton.onclick=applyRecognizedFields;
+document.querySelector('.file-tools').appendChild(syncFieldsButton);
 let channel;
 try { channel = new BroadcastChannel('patent-reader-'+id); } catch (_) { /* independent reading still works */ }
 async function api(path,options={}) {
@@ -64,21 +81,27 @@ function renderClaims(side) {
 function renderDescription() {
   const missing=requireDocument(); if(missing)return missing;
   const text=analysis().description;
-  return card('说明书',text?`<div class="description">${claimHTML(text)}</div>`:empty('未识别出说明书','可在原 PDF 中核对，并通过校对入口补充。'));
+  const paragraphs=String(text || '').split(/\n\s*\n|(?=\[\d{4}\])/).filter(s=>s.trim()).map(block=>{
+    const joined=block.replace(/([A-Za-z])-\n\s*([a-z])/g,'$1$2').replace(/\n/g,' ').replace(/([\u3400-\u9fff]) +(?=[\u3400-\u9fff])/g,'$1');
+    return `<p style="white-space:normal;line-height:1.95;margin:0 0 1em;overflow-wrap:break-word">${claimHTML(joined)}</p>`;
+  }).join('');
+  return card('说明书',text?`<div class="description" style="white-space:normal">${paragraphs}</div>`:empty('未识别出说明书','可在原 PDF 中核对，并通过校对入口补充。'));
 }
 function renderDrawings(side) {
   const missing=requireDocument(); if(missing)return missing;
   const a=analysis(), pages=a.pages || [], figures=pages.filter(p=>p.section==='drawings');
-  // All pages remain selectable, including scans whose heading was not recognized.
-  if(!pages.length)return empty('没有可显示的页面');
-  const target=pages.find(p=>p.number===state.page[side]) || figures[0] || pages[0];
+  if(!figures.length)return empty('尚未识别出附图页','请重新识别，或切换原 PDF 核对。');
+  const target=figures.find(p=>p.number===state.page[side]) || figures[0];
   state.page[side]=target.number;
   const reference=(a.references || []).find(r=>r.number===state.selected);
   const matches=reference?.matches.filter(m=>m.page===target.number) || [];
-  return `<div class="figure-toolbar"><select data-page aria-label="选择附图页面">${pages.map(p=>`<option value="${p.number}" ${p.number===target.number?'selected':''}>第 ${p.number} 页 · ${(p.sections || [p.section]).map(k=>tabs[k] || k).join(' / ')}</option>`).join('')}</select><button data-clear-annotations>撤销本页人工标注</button><button data-annotate>${state.annotation?'取消手工标注':'＋ 手工标注图号'}</button><span class="muted">${figures.length} 页附图 / 共 ${pages.length} 页</span></div>`+
+  return `<div class="figure-toolbar"><select data-page aria-label="选择附图页面">${figures.map(p=>`<option value="${p.number}" ${p.number===target.number?'selected':''}>第 ${p.number} 页 · 附图</option>`).join('')}</select><button data-clear-annotations>撤销本页人工标注</button><button data-annotate>${state.annotation?'取消手工标注':'＋ 手工标注图号'}</button><span class="muted">${figures.length} 页附图，可向下滚动连续浏览</span></div>`+
     (reference?`<div class="notice">当前部件：<b>${esc(reference.name)} (${esc(reference.number)})</b> · 本页 ${matches.length} 个候选位置。${matches.length?'请对照引线和原图核对。':'未找到匹配位置，可切换页面或手工标注。'}</div>`:'<div class="notice">点击另一栏权利要求中的部件编号，可高亮本页候选位置。</div>')+
     (state.annotation?'<p class="muted">点击图中编号位置，再输入正确的编号。手工标注会保存在当前 PDF 的识别结果中。</p>':'')+
-    `<div class="figure-page ${state.annotation?'annotating':''}" data-figure="${target.number}"><img src="${docURL('/page')}&page=${target.number}" alt="专利 PDF 第 ${target.number} 页" draggable="false">${matches.map(m=>`<span class="number-box ${m.source==='manual'?'manual':''}" title="${esc(m.text)}" style="left:${Math.max(0,m.box[0]-.004)*100}%;top:${Math.max(0,m.box[1]-.004)*100}%;width:${(m.box[2]+.008)*100}%;height:${(m.box[3]+.008)*100}%"></span>`).join('')}</div><p class="figure-caption">第 ${target.number} 页 · ${target.ocr?'扫描页 OCR':'PDF 文字提取'} · 黄色虚线为候选位置，绿色为人工补标</p>`;
+    figures.map(p=>{
+      const regions=!state.annotation && p.figureRegions?.length?p.figureRegions:[{top:0,height:1,label:'附图'}];
+      return regions.map((region,index)=>`<div class="figure-page ${state.annotation?'annotating':''}" data-figure="${p.number}" style="aspect-ratio:${(p.aspectRatio || .707)/region.height}"><img loading="lazy" style="position:absolute;top:${-region.top/region.height*100}%;width:100%;min-height:0" src="${docURL('/page')}&page=${p.number}" alt="${esc(region.label)}，PDF 第 ${p.number} 页" draggable="false">${(reference?.matches || []).filter(m=>m.page===p.number && m.box[1]>=region.top && m.box[1]<region.top+region.height).map(m=>`<span class="number-box ${m.source==='manual'?'manual':''}" title="${esc(m.text)}" style="left:${m.box[0]*100}%;top:${(m.box[1]-region.top)/region.height*100}%;width:${m.box[2]*100}%;height:${m.box[3]/region.height*100}%"></span>`).join('')}</div><p class="figure-caption">${esc(region.label)} · PDF 第 ${p.number} 页</p>`).join('');
+    }).join('');
 }
 function renderFees() {
   const groups=[['年费子项',state.fees.filter(f=>f.feeType.includes('年费'))],['其他费用子项',state.fees.filter(f=>!f.feeType.includes('年费'))]];
@@ -103,16 +126,16 @@ function renderPane(side) {
   root.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{state.tabs[side]=b.dataset.tab;renderPane(side);root.querySelector('.pane-content').scrollTop=0;});
   root.querySelectorAll('[data-filter]').forEach(b=>b.onclick=()=>{state.filters[side]=b.dataset.filter;renderPane(side);});
   root.querySelectorAll('[data-reference]').forEach(b=>b.onclick=()=>selectReference(b.dataset.reference,side,true));
-  const page=root.querySelector('[data-page]');if(page)page.onchange=()=>{state.page[side]=+page.value;renderPane(side);};
+  const page=root.querySelector('[data-page]');if(page)page.onchange=()=>{state.page[side]=+page.value;root.querySelector(`[data-figure="${page.value}"]`)?.scrollIntoView({block:'start',behavior:'smooth'});};
   const clear=root.querySelector('[data-clear-annotations]');if(clear)clear.onclick=async()=>{if(!confirm('撤销本页所有人工补标？自动识别结果会保留。'))return;try{await patchAnalysis({clearAnnotations:state.page[side]});render();}catch(e){toast(e.message);}};
   const annotate=root.querySelector('[data-annotate]');if(annotate)annotate.onclick=()=>{state.annotation=!state.annotation;renderPane(side);};
-  const figure=root.querySelector('[data-figure]');if(figure)figure.onclick=async event=>{
+  root.querySelectorAll('[data-figure]').forEach(figure=>figure.onclick=async event=>{
     if(!state.annotation)return;
     const number=prompt('输入图中正确编号（例如 1、701）：',state.selected || '');if(!number)return;
     if(!/^\d{1,5}[a-zA-Z]?$/.test(number.trim()))return toast('编号格式不正确');
     const rect=figure.getBoundingClientRect(), x=Math.max(0,Math.min(.96,(event.clientX-rect.left)/rect.width-.02)), y=Math.max(0,Math.min(.98,(event.clientY-rect.top)/rect.height-.01));
     try { await patchAnalysis({annotation:{page:+figure.dataset.figure,number:number.trim(),box:[x,y,.04,.02]}});state.selected=number.trim();state.annotation=false;render();toast('已保存手工标注'); } catch(e){toast(e.message);}
-  };
+  });
   root.querySelectorAll('[data-add-fee]').forEach(b=>b.onclick=()=>openFee());
   root.querySelectorAll('[data-edit-fee]').forEach(b=>b.onclick=()=>openFee(state.fees.find(f=>f.id===+b.dataset.editFee)));
   root.querySelectorAll('[data-delete-fee]').forEach(b=>b.onclick=async()=>{
@@ -128,6 +151,7 @@ function selectReference(number,side,broadcastEvent=false) {
   const target=document.body.classList.contains('popout')?'right':document.body.classList.contains('single')?side:other;
   if(reference?.matches.length)state.page[target]=reference.matches[0].page;
   state.tabs[target]='drawings';render();
+  $(target+'Pane').querySelector(`[data-figure="${state.page[target]}"]`)?.scrollIntoView({block:'start',behavior:'smooth'});
   if(!reference?.matches.length)toast('尚未找到该编号的位置，可在附图中手工补标');
   if(broadcastEvent)broadcast({type:'reference',number});
 }

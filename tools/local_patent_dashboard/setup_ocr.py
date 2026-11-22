@@ -13,7 +13,7 @@ MODELS = {
 }
 
 
-def main():
+def main(offline=False):
     directory = Path(__file__).resolve().parent / 'ocr' / 'tessdata'
     directory.mkdir(parents=True, exist_ok=True)
     license_path = Path(__file__).resolve().parent / 'third_party/OCR-MODELS-LICENSE.txt'
@@ -23,6 +23,8 @@ def main():
         if target.is_file() and hashlib.sha256(target.read_bytes()).hexdigest() == digest:
             print(language + ': verified')
             continue
+        if offline:
+            raise ValueError(f'离线构建：本地模型缺失或校验不通过 {target}；未尝试下载。')
         url = f'https://raw.githubusercontent.com/tesseract-ocr/{repository}/{revision}/{language}.traineddata'
         with urllib.request.urlopen(url, timeout=60) as response:
             data = response.read(20 * 1024 * 1024)

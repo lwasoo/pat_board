@@ -108,7 +108,7 @@ exit /b 1
     (bundle/'start.bat').write_bytes(text.replace('\n', '\r\n').encode('ascii'))
     (bundle/'使用说明.txt').write_text('''企业专利统计看板 · Windows 便携版
 
-完整解压后双击 start.bat，也可以直接打开本目录的看板 EXE。
+完整解压后直接双击本目录的看板 EXE。start.bat 只是可选的依赖检查入口。
 升级时先退出旧看板，避免浏览器继续连接仍在运行的旧服务。
 整个目录包含 Python 应用、Tesseract OCR 引擎、依赖 DLL 和中英文识别模型；
 使用电脑无需单独安装 Python 或 Tesseract，不需要手工配置环境变量。
@@ -148,8 +148,9 @@ def validate_runtime(bundle):
             input=png,cwd=bundle,env=env,capture_output=True,timeout=60,creationflags=flags)
         if result.returncode or b'12345' not in result.stdout:
             raise ValueError(f'便携 OCR 的 {language} 实际识别验证未通过；不会发布不完整的包。')
-    env['PATENT_TESSERACT_CMD'] = str(executable)
-    env['PATENT_TESSDATA_DIR'] = str(models)
+    env.pop('PATENT_TESSERACT_CMD', None)
+    env.pop('PATENT_TESSDATA_DIR', None)
+    env['PATH'] = str(Path(system_root)/'System32')+os.pathsep+system_root
     application = subprocess.run([str(bundle/APP_EXE), '--check-runtime'],cwd=bundle,env=env,
         capture_output=True,timeout=90,creationflags=flags)
     if application.returncode:
@@ -170,12 +171,14 @@ def make_archive(bundle, archive):
             raise ValueError('便携 ZIP 校验失败。')
 
 
-def publish_bundle(bundle, target, archive, archive_target):
+def publish_bundle(bundle, target, archive=None, archive_target=None):
     """Replace only managed outputs, rolling back errors and leaving data untouched."""
     target.mkdir(parents=True,exist_ok=True)
     backup = target.parent/('.portable-backup-'+uuid.uuid4().hex)
     backup.mkdir()
-    operations = [(bundle/name,target/name) for name in MANAGED]+[(archive,archive_target)]
+    operations = [(bundle/name,target/name) for name in MANAGED if (bundle/name).exists()]
+    if archive is not None:
+        operations.append((archive,archive_target))
     moved_old, installed = [], []
     try:
         for index,(source,destination) in enumerate(operations):
@@ -196,7 +199,12 @@ def publish_bundle(bundle, target, archive, archive_target):
             raise ValueError(f'无法恢复旧输出，备份保留在 {backup}；data 未修改。') from recovery
         shutil.rmtree(backup)
         raise ValueError('无法更新输出，请先退出正在运行的看板后重试；已有 data 未修改。') from exc
-    shutil.rmtree(backup)
+    try:
+        shutil.rmtree(backup)
+    except OSError:
+        # The validated new bundle is already published. Windows antivirus or a
+        # previous process may still hold the old EXE; keep its backup for later.
+        print(f'新便携包已生成；旧版本备份暂时被占用，可稍后清理：{backup}')
 
 
 def build(explicit=None, output=None):
@@ -204,16 +212,15 @@ def build(explicit=None, output=None):
         raise ValueError('请在 64 位 Windows 上运行 build.bat，以生成 Windows 便携版。')
     executable = find_runtime(explicit)
     if not executable:
-        raise ValueError('未找到 Tesseract 5，运行 build.bat 自动安装，或用 -TesseractExe 指定路径。')
+        raise ValueError('离线构建未找到本地 Tesseract 5，请用 -TesseractExe 指定路径；不会下载或安装。')
     version = subprocess.run([str(executable), '--version'], capture_output=True, timeout=30,
                              creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     if version.returncode or not re.search(rb'tesseract\s+v?5\.', version.stdout+version.stderr, re.I):
         raise ValueError('打包需要可运行的 Tesseract 5，请先升级或修复 OCR 引擎。')
     from setup_ocr import main as setup_models
-    setup_models()  # pinned downloads with checksums; no unverified model fallback
+    setup_models(offline=True)
     target = Path(output).resolve() if output else REPO/'outputs/单机版专利看板'
     target.parent.mkdir(parents=True,exist_ok=True)
-    archive_target = target.parent/(APP_NAME+'-便携版.zip')
     with tempfile.TemporaryDirectory(prefix='.portable-build-',dir=target.parent) as temporary:
         temporary = Path(temporary)
         bundle = temporary/'bundle'
@@ -226,19 +233,14 @@ def build(explicit=None, output=None):
             raise ValueError('未生成看板 EXE。')
         copy_runtime(executable,bundle/'ocr/tesseract')
         copy_models(ROOT/'ocr/tessdata',bundle/'ocr/tessdata')
-        write_launcher(bundle)
         # Validate after moving to a different path, including spaces and CJK.
         relocated = temporary/'移位验证 portable'
         bundle.replace(relocated)
-        version = validate_runtime(relocated)
-        files = {str(p.relative_to(relocated)).replace('\\','/'):hashlib.sha256(p.read_bytes()).hexdigest()
-                 for p in sorted(relocated.rglob('*')) if p.is_file()}
-        (relocated/'build-info.json').write_text(json.dumps({'python':sys.version.split()[0],
-            'tesseract':version,'files':files},ensure_ascii=False,indent=2),encoding='utf-8')
-        archive = temporary/'portable.zip'
-        make_archive(relocated,archive)
-        publish_bundle(relocated,target,archive,archive_target)
-    print(f'便携目录：{target}\n便携 ZIP：{archive_target}\n完整解压后双击 start.bat。')
+        validate_runtime(relocated)
+        publish_bundle(relocated,target)
+    for name in ('start.bat', '使用说明.txt', 'build-info.json'):
+        (target/name).unlink(missing_ok=True)
+    print(f'输出目录：{target}\n直接双击 EXE；保留 ocr 文件夹。')
 
 
 def main():

@@ -104,7 +104,8 @@ def capabilities():
     languages = []
     if cmd:
         try:
-            result = subprocess.run(cmd + ["--list-langs"], capture_output=True, text=True, timeout=10)
+            result = subprocess.run(cmd + ["--list-langs"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+                                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
             languages = [line.strip() for line in result.stdout.splitlines()[1:] if line.strip()]
         except (OSError, subprocess.SubprocessError):
             pass
@@ -287,7 +288,8 @@ def ocr_page(pixmap, psm=3, digits=False, language=None):
         command += ["-c", "tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyz"]
     try:
         result = subprocess.run(command + ["-c", "tessedit_create_tsv=1", "-c", "tessedit_create_txt=0"], input=pixmap.tobytes("png"),
-                                capture_output=True, timeout=90)
+                                capture_output=True, timeout=90,
+                                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
     except FileNotFoundError as exc:
         raise ValueError("无法启动 Tesseract OCR 引擎，请检查 tesseract.exe 的安装位置及 PATENT_TESSERACT_CMD 配置。") from exc
     except OSError as exc:
@@ -400,10 +402,11 @@ def extract_document(path):
                             pix = pix or render_for_ocr(page)
                             candidates = []
                             for segmentation in (11, 6):
-                                _, detected = ocr_page(pix, psm=segmentation, digits=True)
+                                _, detected = ocr_page(pix, psm=segmentation, language='eng')
                                 candidates.extend(detected)
                             for label in candidates:
-                                if re.fullmatch(r"\d{1,5}[a-zA-Z]?", label["text"]) and label["confidence"] >= 50:
+                                label['text'] = label['text'].strip('()（）.,:;')
+                                if re.fullmatch(r"\d{1,5}[a-zA-Z]?", label["text"]) and label["confidence"] >= 40 and .1 < label['box'][1] < .95:
                                     if not any(l["text"] == label["text"] and abs(l["box"][0]-label["box"][0]) < .03 and abs(l["box"][1]-label["box"][1]) < .03 for l in labels):
                                         labels.append(label)
                         except (ValueError, subprocess.TimeoutExpired) as exc:
@@ -412,7 +415,25 @@ def extract_document(path):
                     sections[part["section"]].append(part["text"])
                     if index+1 not in section_pages[part["section"]]:
                         section_pages[part["section"]].append(index+1)
+                figure_regions = []
+                if section == 'drawings':
+                    captions = []
+                    for block in page.get_text('dict')['blocks']:
+                        for line in block.get('lines', []):
+                            caption = ''.join(span['text'] for span in line['spans']).strip()
+                            if re.fullmatch(r'(?:FIG(?:URE)?\.?|图)\s*\d+[A-Za-z]?', caption, re.I):
+                                x0,y0,x1,y1 = line['bbox']
+                                captions.append((y0/page.rect.height, y1/page.rect.height, (x0+x1)/2/page.rect.width, caption))
+                    # Split only vertically stacked figures with distinct caption rows.
+                    captions.sort()
+                    if len(captions)>1 and all(b[0]-a[1]>.05 for a,b in zip(captions,captions[1:])):
+                        top = .1
+                        for y0,y1,x,label in captions:
+                            bottom = min(1,y1+.015)
+                            figure_regions.append({'label':label,'top':top,'height':bottom-top})
+                            top = bottom
                 result["pages"].append({"number": index+1, "section": section, "text": text,
+                    "figureRegions": figure_regions, "aspectRatio": page.rect.width/page.rect.height,
                     "ocr": used_ocr, "labels": labels, "uncertainWords": uncertain,
                     "sections": page_sections, "layout": layout})
                 result.update(progress=round((index+1)/len(pdf)*100), message=f"已识别 {index+1}/{len(pdf)} 页")

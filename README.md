@@ -4,9 +4,9 @@
 
 ## 直接使用
 
-在 Windows 上运行根目录 `build.bat` 生成完整便携包，完成后双击 `outputs/单机版专利看板/start.bat`。分发时发送生成的便携 ZIP，使用电脑完整解压后运行其中的 `start.bat`，无需另外安装 Python 或 OCR 引擎。程序仅监听 `127.0.0.1`，数据保存在 EXE 同目录的 `data/patents.db`。
+修改源码后双击根目录 `build.bat` 离线编译。脚本只使用本地 Python、PyInstaller、PyMuPDF、OCR 引擎和模型，不运行 pip、WinGet 或网络下载，依赖缺失时明确报错。只生成 `outputs/单机版专利看板` 文件夹，不生成 ZIP、启动 BAT、说明或构建清单。直接双击其中的 `企业专利统计看板.exe`，保留必需的 `ocr` 文件夹。数据保存在 EXE 同目录的 `data/patents.db`。
 
-WinGet 下载 OCR 报 `0x80072efd` 时，脚本会尝试备用下载；也可用 `build.bat -OcrInstaller "官方安装包路径"` 提供本地安装包。版本及下载说明见 [Windows 打包说明](tools/local_patent_dashboard/README.md#一键构建-windows-完整便携版)。
+本机已准备好 `.build-venv` 构建环境与中英文模型，重复构建直接复用。也可用 `build.bat -Python "本地python.exe" -TesseractExe "本地tesseract.exe"` 指定离线依赖。
 
 ## 功能
 

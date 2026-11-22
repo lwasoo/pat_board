@@ -96,11 +96,13 @@ class WindowsBundleTests(unittest.TestCase):
         def run(args,**kwargs):
             calls.append((args,kwargs))
             self.assertEqual(kwargs['cwd'],stage)
-            self.assertIn(str(stage/'ocr/tesseract'),kwargs['env']['PATH'])
+            if '--check-runtime' not in args:
+                self.assertIn(str(stage/'ocr/tesseract'),kwargs['env']['PATH'])
             if '--version' in args:return subprocess.CompletedProcess(args,0,b'tesseract v5.5.0\n',b'')
             if '--list-langs' in args:return subprocess.CompletedProcess(args,0,b'List of available languages (2):\nchi_sim\neng\n',b'')
             if '--check-runtime' in args:
-                self.assertEqual(kwargs['env']['PATENT_TESSERACT_CMD'],str(stage/'ocr/tesseract/tesseract.exe'))
+                self.assertNotIn('PATENT_TESSERACT_CMD',kwargs['env'])
+                self.assertNotIn('PATENT_TESSDATA_DIR',kwargs['env'])
                 return subprocess.CompletedProcess(args,0,b'',b'')
             self.assertTrue(kwargs['input'].startswith(b'\x89PNG'))
             return subprocess.CompletedProcess(args,0,b'PORTABLE OCR 12345\n',b'')

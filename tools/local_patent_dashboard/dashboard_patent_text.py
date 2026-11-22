@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 import statistics
 
-PARSER_VERSION = 2
+PARSER_VERSION = 3
 US_NUMBER = re.compile(r"\bUS\s*0?\d[\d\s,]*\s*[AB]\s*\d?\b", re.I)
 CN_NUMBER = re.compile(r"\bCN\s*\d{7,12}\s*[A-Z]\d?\b", re.I)
 CLAIM_HEADING = re.compile(r"^(?:(?:what\s+is|the\s+invention)\s+claimed\s+is|we\s+claim|i\s+claim)\s*[:.]?\s*$", re.I)
@@ -35,7 +35,7 @@ def is_drawing_sheet(text):
             return True
         if re.fullmatch(r"DRAWINGS", line.strip(), re.I):
             return True
-    return bool(re.search(r"\bSheet\s+\d+\s+of\s+\d+\b", text[:450], re.I))
+    return bool(re.search(r"\bSheet\s*\d+\s*of\s*\d+\b", text[:1800], re.I))
 
 
 def heading_section(line):
@@ -217,12 +217,12 @@ def extract_metadata(text):
         value = re.sub(r"^(?:"+label+r")\s*[:：]?\s*", "", value, flags=re.I)
         value = re.split(r"\(\s*\*\s*\)|权利要求书\d+页|\bRelated\s+U", value, maxsplit=1, flags=re.I)[0]
         return value.strip()
-    title = field('54', r'发明名称|名称')
+    title = field('54', r'发明名称|实用新型名称|外观设计名称|名称')
     title = re.sub(r"\s*\n\s*", "" if jurisdiction(text)=='CN' else " ", title)
     applicant = field('71', r'申请人|Applicant') or field('73', r'专利权人|Assignee')
     inventor = field('72', r'发明人|Inventors?')
     application = field('21', r'申请号|Appl\s*\.\s*No\s*\.')
-    match = re.search(r"\d{12}\.\d|\d{2}\s*/\s*[\d,\s]+", application.splitlines()[0] if application else '')
+    match = re.search(r"(?:CN\s*)?\d{12}\s*\.\s*[\dXx]|(?:US\s*)?\d{2}\s*/\s*[\d,\s]+", application.splitlines()[0] if application else '')
     application = re.sub(r"\s+", "", match[0]) if match else ''
     filed = field('22', r'申请日|Filed').splitlines()
     date = filed[0] if filed else ''
