@@ -156,21 +156,18 @@ OCR 引擎缺失时，不再逐页栅格化并重复同一错误：全扫描文�
    两个模型的实际识别，以及打包后的应用运行依赖。检查不通过会停止发布输出。
 6. 生成 `outputs/单机版专利看板`。更新输出只替换程序管理的文件，既有 `data` 目录保持原样。
 
-GitHub 构建会额外将以下文件打成 `outputs/patent-dashboard-windows-x64.zip`。分发 ZIP 从干净的构建目录生成：
+离线编译后生成的应用目录可以单独分发：
 
 ```text
-企业专利统计看板/
+outputs/单机版专利看板/
   企业专利统计看板.exe
-  start.bat
-  使用说明.txt
   ocr/
     tesseract/  # 引擎及依赖 DLL
     tessdata/   # chi_sim、eng 及模型许可证
 ```
 
-使用电脑完整解压 ZIP 后直接双击 EXE，无需安装 Python、Tesseract 或手工设置变量。
-`start.bat` 只是可选检查入口；EXE 自动寻找相邻的 OCR 目录。
-分发时请复制整个 ZIP 或便携目录。Python 运行时和 PyMuPDF 随 EXE 一起打包，OCR 引擎、DLL 和模型在相邻的 `ocr` 目录。PyInstaller 只在编译时使用。
+运行编译出的应用时双击 EXE，移动应用目录时保留相邻的 `ocr` 和已有 `data`。
+源码依赖包用于修改源码后再次编译，编译后的应用目录用于运行看板。
 
 可选参数（在项目根目录的 PowerShell 中运行）：
 
