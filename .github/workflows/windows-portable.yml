@@ -79,7 +79,15 @@ jobs:
 
       - name: Build and verify portable ZIP
         shell: pwsh
-        run: python tools/local_patent_dashboard/build_windows.py --tesseract "$env:PATENT_CI_TESSERACT" --portable-zip
+        run: |
+          $messages = @(python -u tools/local_patent_dashboard/build_windows.py --tesseract "$env:PATENT_CI_TESSERACT" --portable-zip 2>&1)
+          $buildExit = $LASTEXITCODE
+          $messages | ForEach-Object { Write-Output "$_" }
+          if ($buildExit -ne 0) {
+            $detail = ($messages | Select-Object -Last 12) -join ' | '
+            Write-Output "::error::Portable build failed (exit $buildExit). $detail"
+            exit 1
+          }
 
       - name: Upload the ready-to-use ZIP
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
