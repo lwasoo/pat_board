@@ -69,6 +69,19 @@ class OcrRuntimeTests(unittest.TestCase):
         with patch.object(documents.shutil,'which',return_value='/engine/tesseract'):
             self.assertEqual(documents.ocr_command()[1:],['--tessdata-dir',str(models)])
 
+    def test_windows_ocr_loads_models_from_unicode_directory(self):
+        models = self.root / '中文目录 with spaces' / 'tessdata'
+        models.mkdir(parents=True)
+        executable = self.root / 'tesseract.exe'
+        command = [str(executable), '--tessdata-dir', str(models), '--list-langs']
+        with patch.object(documents.sys, 'platform', 'win32'), patch.object(documents.subprocess, 'run') as run:
+            documents.run_tesseract(command, capture_output=True)
+        run.assert_called_once_with(
+            [str(executable.resolve()), '--tessdata-dir', '.', '--list-langs'],
+            cwd=models.resolve(),
+            capture_output=True,
+        )
+
     def test_invalid_override_does_not_execute_model_flags(self):
         with patch.dict(os.environ, {'PATENT_TESSERACT_CMD':str(self.root/'missing.exe')}):
             self.assertEqual(documents.ocr_command(), [])

@@ -124,7 +124,7 @@ OCR 结果与图号定位仍应对照原文核对。
 def validate_runtime(bundle):
     """Run from a relocated directory with the installed runtime removed from PATH."""
     executable = bundle/'ocr/tesseract/tesseract.exe'
-    models = bundle/'ocr/tessdata'
+    models = 'ocr/tessdata'
     env = os.environ.copy()
     env.pop('TESSDATA_PREFIX', None)
     system_root = env.get('SystemRoot', r'C:\Windows')

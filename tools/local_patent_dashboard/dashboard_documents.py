@@ -94,6 +94,18 @@ def ocr_command():
     return command
 
 
+def run_tesseract(command, **options):
+    if sys.platform == "win32" and "--tessdata-dir" in command:
+        # Windows can set a Unicode working directory even when the engine
+        # reads its command-line arguments through the ANSI code page.
+        command = list(command)
+        model_arg = command.index("--tessdata-dir") + 1
+        options["cwd"] = Path(command[model_arg]).resolve()
+        command[model_arg] = "."
+        command[0] = str(Path(command[0]).resolve())
+    return subprocess.run(command, **options)
+
+
 def capabilities():
     try:
         pdf_engine()
@@ -104,7 +116,7 @@ def capabilities():
     languages = []
     if cmd:
         try:
-            result = subprocess.run(cmd + ["--list-langs"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+            result = run_tesseract(cmd + ["--list-langs"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
                                     creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
             languages = [line.strip() for line in result.stdout.splitlines()[1:] if line.strip()]
         except (OSError, subprocess.SubprocessError):
@@ -287,7 +299,7 @@ def ocr_page(pixmap, psm=3, digits=False, language=None):
     if digits:
         command += ["-c", "tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyz"]
     try:
-        result = subprocess.run(command + ["-c", "tessedit_create_tsv=1", "-c", "tessedit_create_txt=0"], input=pixmap.tobytes("png"),
+        result = run_tesseract(command + ["-c", "tessedit_create_tsv=1", "-c", "tessedit_create_txt=0"], input=pixmap.tobytes("png"),
                                 capture_output=True, timeout=90,
                                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
     except FileNotFoundError as exc:
