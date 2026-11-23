@@ -20,3 +20,5 @@ __pycache__/
 /tools/local_patent_dashboard/ocr/tesseract/
 
 /.build-cache/
+
+/.build-python/

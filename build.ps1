@@ -2,36 +2,29 @@
 $ErrorActionPreference = "Stop"
 $OutputEncoding = [Console]::OutputEncoding = [Text.Encoding]::UTF8
 $env:PYTHONUTF8 = "1"
+$env:PYTHONNOUSERSITE = "1"
+Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
+Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
 $env:PIP_NO_INDEX = "1"
 $env:PIP_DISABLE_PIP_VERSION_CHECK = "1"
 Set-Location -LiteralPath $PSScriptRoot
 $buildExit = 0
-function Show-PortableDownload {
-    $url = "https://github.com/lwasoo/pat_board/actions/workflows/windows-portable.yml?query=branch%3Atrial%2Fpatent-reader"
-    Write-Host "本机缺少源码编译依赖。直接使用已打包的 Windows 便携版即可。" -ForegroundColor Yellow
-    Write-Host "登录 GitHub，选择最近一次成功的运行，在 Artifacts 下载 patent-dashboard-windows-x64.zip。"
-    Write-Host "完整解压 ZIP，双击其中的 start.bat 或看板 EXE。便携包已经包含运行依赖。"
-    Write-Host $url
-    try { Start-Process $url } catch { Write-Host "请复制上方地址到浏览器打开。" }
-}
 try {
     if ($env:OS -ne "Windows_NT") { throw "请在 Windows 上运行 build.bat。" }
     Write-Host "企业专利统计看板 - 源码离线编译（需要本地构建环境）" -ForegroundColor Cyan
     if (-not $Python) {
-        foreach ($candidate in @(".build-venv\Scripts\python.exe", ".venv\Scripts\python.exe")) {
+        foreach ($candidate in @(".build-python\python.exe", ".build-venv\Scripts\python.exe", ".venv\Scripts\python.exe")) {
             $path = Join-Path $PSScriptRoot $candidate
             if (Test-Path -LiteralPath $path) { $Python = $path; break }
         }
         if (-not $Python -and (Get-Command python -ErrorAction SilentlyContinue)) { $Python = (Get-Command python).Source }
     }
     if (-not $Python) {
-        Show-PortableDownload
-        throw "当前电脑无法编译源码，请使用上方的便携包。"
+        throw "未找到随源码附带的 .build-python\python.exe。请完整解压 source-offline 源码依赖包。"
     }
     & $Python -c "import sys,struct,importlib.util; sys.exit(0 if sys.version_info >= (3,10) and struct.calcsize('P') == 8 and all(importlib.util.find_spec(name) for name in ('PyInstaller','pymupdf')) else 1)"
     if ($LASTEXITCODE -ne 0) {
-        Show-PortableDownload
-        throw "当前 Python 缺少编译依赖，请使用上方的便携包。"
+        throw "编译依赖缺失。请完整解压 source-offline 源码依赖包，保留 .build-python 和 ocr 目录。"
     }
     $outputExe = Join-Path $PSScriptRoot "outputs\单机版专利看板\企业专利统计看板.exe"
     $running = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $outputExe })

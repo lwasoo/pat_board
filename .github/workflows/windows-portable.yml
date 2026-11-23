@@ -1,4 +1,4 @@
-name: Windows portable bundle
+name: Windows offline source kit
 
 on:
   push:
@@ -6,6 +6,8 @@ on:
     paths:
       - '.github/workflows/windows-portable.yml'
       - 'tools/local_patent_dashboard/**'
+      - 'build.bat'
+      - 'build.ps1'
 
 permissions:
   contents: read
@@ -77,21 +79,21 @@ jobs:
         shell: pwsh
         run: python tools/local_patent_dashboard/setup_ocr.py
 
-      - name: Build and verify portable ZIP
+      - name: Build and verify offline source kit
         shell: pwsh
         run: |
-          $messages = @(python -u tools/local_patent_dashboard/build_windows.py --tesseract "$env:PATENT_CI_TESSERACT" --portable-zip 2>&1)
+          $messages = @(python -u tools/local_patent_dashboard/build_source_kit.py --tesseract "$env:PATENT_CI_TESSERACT" 2>&1)
           $buildExit = $LASTEXITCODE
           $messages | ForEach-Object { Write-Output "$_" }
           if ($buildExit -ne 0) {
             $detail = ($messages | Select-Object -Last 12) -join ' | '
-            Write-Output "::error::Portable build failed (exit $buildExit). $detail"
+            Write-Output "::error::Offline source kit failed (exit $buildExit). $detail"
             exit 1
           }
 
-      - name: Upload the ready-to-use ZIP
+      - name: Upload sources and offline build dependencies
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          path: outputs/patent-dashboard-windows-x64.zip
+          path: outputs/patent-dashboard-source-offline-windows-x64.zip
           archive: false
           if-no-files-found: error

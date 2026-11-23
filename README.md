@@ -4,9 +4,11 @@
 
 ## 直接使用
 
-在 [GitHub Actions](https://github.com/lwasoo/pat_board/actions/workflows/windows-portable.yml?query=branch%3Atrial%2Fpatent-reader) 打开最近一次成功的 Windows 构建，登录后从 Artifacts 下载 `patent-dashboard-windows-x64.zip`。完整解压后双击 `start.bat` 或 `企业专利统计看板.exe`。ZIP 已包含 Python 运行时、PyMuPDF、Tesseract、DLL 和中英文模型，PDF 读取和 OCR 可离线使用。
+下载包含源码与编译依赖的 `patent-dashboard-source-offline-windows-x64.zip`，完整解压后修改 `tools/local_patent_dashboard` 内的代码，再双击根目录 `build.bat` 编译。输出位于 `outputs/单机版专利看板`。
 
-换电脑时可以用 U 盘复制同一份 ZIP，或直接复制完整便携目录。台账和已上传的 PDF 在便携目录的 `data` 中，迁移现有台账时一并复制。
+源码依赖包包含 `.build-python` 下的 Python、PyInstaller、PyMuPDF，以及 `tools/local_patent_dashboard/ocr` 下的 Tesseract、DLL 和中英文模型。换到另一台 Windows 10/11 x64 电脑时复制整个目录即可离线编译。
+
+包由 [GitHub Actions](https://github.com/lwasoo/pat_board/actions/workflows/windows-portable.yml?query=branch%3Atrial%2Fpatent-reader) 自动生成，在最近一次成功运行的 Artifacts 中下载。GitHub 自带的 Download ZIP 仅包含 Git 跟踪的源文件，编译依赖在上述源码依赖包中。
 
 ## 功能
 
@@ -19,6 +21,6 @@
 
 ## 源码
 
-单机版源码位于 `tools/local_patent_dashboard`。试用或分发请使用 GitHub 构建的便携包。自行修改源码时，可在已准备本地依赖的 Windows 电脑用 `build.bat` 离线编译；完整说明见 [源码开发与 PDF/OCR 安装](tools/local_patent_dashboard/README.md)。
+单机版源码位于 `tools/local_patent_dashboard`。自行修改源码时，使用源码依赖包内的 `build.bat` 离线编译；完整说明见 [源码开发与 PDF/OCR 安装](tools/local_patent_dashboard/README.md)。
 
 上传的专利 PDF 与识别结果保存在本机 `data/documents`。更换 PDF 会替换本系统保存的旧版本；删除专利会清理其上传文件，不会删除外部 PDF。备份时需保存整个 `data` 目录。

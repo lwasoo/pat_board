@@ -134,17 +134,21 @@ OCR 引擎缺失时，不再逐页栅格化并重复同一错误：全扫描文�
 
 ## 一键构建 Windows 完整便携版
 
-### 下载成品
+### 下载源码及离线编译依赖
 
-更新 `trial/patent-reader` 分支中的程序或打包流程时，GitHub Actions 会在 Windows 运行器上准备构建依赖，解包已校验的 Tesseract 引擎，下载并校验模型，再生成程序和 ZIP。移位后的 OCR 和应用依赖检查通过后，工作流才会上传成品。
+更新分支中的程序、构建脚本时，GitHub Actions 自动生成 `patent-dashboard-source-offline-windows-x64.zip`。登录后在 [构建页面](https://github.com/lwasoo/pat_board/actions/workflows/windows-portable.yml?query=branch%3Atrial%2Fpatent-reader) 的成功运行中下载 Artifacts。
 
-登录 GitHub，打开 [Windows portable bundle](https://github.com/lwasoo/pat_board/actions/workflows/windows-portable.yml?query=branch%3Atrial%2Fpatent-reader) 最近一次成功运行，在 Artifacts 下载 `patent-dashboard-windows-x64.zip`。完整解压后双击 `start.bat` 或 EXE。可以用 U 盘将同一份 ZIP 带到其他 Windows 10/11 x64 电脑使用。
+完整解压后可直接编辑 Python、HTML、JS、CSS，再双击根目录 `build.bat`。源码包自带完整 Python 安装和 PyInstaller、PyMuPDF，编译时优先使用 `.build-python/python.exe`；OCR 引擎、DLL 与模型位于源码的 `ocr` 下。
+
+工作流在含中文和空格的目录中，用包内 Python、源码和依赖实际编译。检查时清除系统 Python 路径和用户包路径，禁止 pip 索引并设置不可用的下载代理。应用与 OCR 检查通过后再上传源码依赖 ZIP，其中不包含验证时生成的应用输出。
+
+请复制整个目录到其他 Windows 10/11 x64 电脑，包括 `.build-python` 和 `ocr`。GitHub 的源码 Download ZIP 不包含这些二进制依赖。
 
 ### 在已有依赖的电脑离线编译源码
 
 在 64 位 Windows 上双击项目根目录的 `build.bat`：
 
-1. 复用项目 `.build-venv`、`.venv` 或指定的 Python 3.10+（64 位）环境。
+1. 优先使用 `.build-python`，其次复用项目 `.build-venv`、`.venv` 或指定的 Python 3.10+（64 位）环境。
 2. 检查本地 PyInstaller 和 PyMuPDF，不运行 pip，不安装或下载依赖。
 3. 寻找本地 Tesseract；缺少时明确报错，不运行 WinGet 或下载安装器。
 4. 校验本地中英文模型，将 Tesseract、依赖 DLL 和许可文件一起收集到输出；模型缺失或损坏时停止，不联网下载。
