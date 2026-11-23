@@ -32,21 +32,41 @@ jobs:
         shell: pwsh
         run: python -m pip install -r tools/local_patent_dashboard/build-requirements.txt
 
-      - name: Stage verified OCR engine and models
+      - name: Download and check the OCR installer
         shell: pwsh
         run: |
           $installer = Join-Path $env:RUNNER_TEMP 'tesseract-setup.exe'
-          $ocrRoot = Join-Path $env:RUNNER_TEMP 'patent-tesseract'
           python tools/local_patent_dashboard/ocr_installer.py --download $installer
-          if ($LASTEXITCODE -ne 0) { throw 'Could not download the verified Tesseract installer.' }
+
+      - name: Unpack the OCR runtime
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $installer = Join-Path $env:RUNNER_TEMP 'tesseract-setup.exe'
+          $ocrRoot = Join-Path $env:RUNNER_TEMP 'patent-tesseract'
           # Extract the runtime without executing the installer or copying its plugins.
-          $sevenZip = Join-Path $env:ProgramFiles '7-Zip\7z.exe'
-          & $sevenZip x -y "-o$ocrRoot" '-x!$PLUGINSDIR' $installer
-          if ($LASTEXITCODE -ne 0) { throw 'Could not extract the Tesseract runtime.' }
+          $sevenZip = Get-Command 7z.exe -ErrorAction SilentlyContinue
+          $extractor = if ($sevenZip) { $sevenZip.Source } else { Join-Path $env:ProgramFiles '7-Zip\7z.exe' }
+          if (-not (Test-Path -LiteralPath $extractor -PathType Leaf)) {
+            Write-Output '::error::7-Zip executable missing on the Windows runner.'
+            exit 1
+          }
+          & $extractor x -y "-o$ocrRoot" '-x!$PLUGINSDIR' $installer
+          $extractExit = $LASTEXITCODE
           $engine = Join-Path $ocrRoot 'tesseract.exe'
-          if (-not (Test-Path -LiteralPath $engine -PathType Leaf)) { throw 'Tesseract executable missing.' }
+          # 7-Zip can report a warning for the outer signed PE header while
+          # extracting the inner NSIS archive successfully. The build also
+          # loads the extracted engine and performs real OCR before upload.
+          if ($extractExit -gt 1 -or -not (Test-Path -LiteralPath $engine -PathType Leaf)) {
+            Write-Output "::error::Could not extract the Tesseract runtime (7-Zip exit $extractExit)."
+            exit 1
+          }
           "PATENT_CI_TESSERACT=$engine" >> $env:GITHUB_ENV
-          python tools/local_patent_dashboard/setup_ocr.py
+          exit 0
+
+      - name: Download and check the OCR models
+        shell: pwsh
+        run: python tools/local_patent_dashboard/setup_ocr.py
 
       - name: Build and verify portable ZIP
         shell: pwsh
