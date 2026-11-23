@@ -14,6 +14,8 @@ jobs:
   build:
     runs-on: windows-2025
     timeout-minutes: 20
+    env:
+      PYTHONUTF8: '1'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -36,7 +38,14 @@ jobs:
         shell: pwsh
         run: |
           $installer = Join-Path $env:RUNNER_TEMP 'tesseract-setup.exe'
-          python tools/local_patent_dashboard/ocr_installer.py --download $installer
+          $messages = @(python tools/local_patent_dashboard/ocr_installer.py --download $installer 2>&1)
+          $downloadExit = $LASTEXITCODE
+          $messages | ForEach-Object { Write-Output "$_" }
+          if ($downloadExit -ne 0) {
+            $detail = $messages | Select-Object -Last 1
+            Write-Output "::error::OCR installer preparation failed (exit $downloadExit). $detail"
+            exit 1
+          }
 
       - name: Unpack the OCR runtime
         shell: pwsh
