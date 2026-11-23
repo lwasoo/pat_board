@@ -1,5 +1,11 @@
 ﻿# Restore build dependencies from Git-tracked ZIP parts without Python or network.
 $ErrorActionPreference = 'Stop'
+function Get-DependencyHash([string]$Path) {
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    $file = [IO.File]::OpenRead($Path)
+    try { return ([BitConverter]::ToString($hasher.ComputeHash($file))).Replace('-', '').ToLowerInvariant() }
+    finally { $file.Dispose(); $hasher.Dispose() }
+}
 $root = $PSScriptRoot
 $vendor = Join-Path $root '.offline-build'
 $manifest = Get-Content -LiteralPath (Join-Path $vendor 'manifest.json') -Raw | ConvertFrom-Json
@@ -23,14 +29,14 @@ try {
         foreach ($part in $manifest.parts) {
             if ($part.name -notmatch '^dependencies\.zip\.[0-9]{3}$') { throw '依赖分卷名称无效。' }
             $path = Join-Path $vendor $part.name
-            if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $part.sha256) {
+            if ((Get-DependencyHash $path) -ne $part.sha256) {
                 throw "依赖分卷损坏，请重新拉取：$($part.name)"
             }
             $inputStream = [IO.File]::OpenRead($path)
             try { $inputStream.CopyTo($stream) } finally { $inputStream.Dispose() }
         }
     } finally { $stream.Dispose() }
-    if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $manifest.sha256) { throw '完整依赖包校验失败。' }
+    if ((Get-DependencyHash $archive) -ne $manifest.sha256) { throw '完整依赖包校验失败。' }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     [IO.Compression.ZipFile]::ExtractToDirectory($archive, $unpacked)
     foreach ($target in $targets) {
