@@ -96,6 +96,17 @@ class OcrRuntimeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'依赖 DLL'):
                 documents.ocr_page(pixmap)
 
+    def test_literal_quote_does_not_swallow_following_tsv_rows(self):
+        from subprocess import CompletedProcess
+        header = 'level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n'
+        rows = '5\t1\t1\t1\t1\t1\t0\t0\t10\t10\t90\t"\n5\t1\t1\t1\t1\t2\t12\t0\t20\t10\t95\tpower\n'
+        pixmap = Mock(width=100, height=100)
+        pixmap.tobytes.return_value = b'png'
+        with patch.object(documents, 'ocr_command', return_value=['tesseract']), patch.object(documents.subprocess, 'run', return_value=CompletedProcess([], 0, (header + rows).encode())):
+            text, tokens = documents.ocr_page(pixmap)
+        self.assertEqual([t['text'] for t in tokens], ['"', 'power'])
+        self.assertEqual(text, '" power')
+
     def test_legacy_empty_success_is_reported_as_failure(self):
         result={'status':'ready','pages':[{'text':'','ocr':False} for _ in range(22)],
                 'claims':[],'description':'','metadata':{},

@@ -2,7 +2,7 @@
 import unittest
 from dashboard_patent_text import (
     classify_page, is_drawing_sheet, order_words, parse_claims, split_sections,
-    extract_metadata, jurisdiction, check_declared_counts,
+    extract_metadata, jurisdiction, check_declared_counts, normalize_abstract, normalize_classification,
 )
 
 
@@ -55,6 +55,23 @@ class PatentTextTests(unittest.TestCase):
         self.assertEqual(m['publicationNumber'],'US10211630B1')
         self.assertEqual(m['applicationDate'],'2013-09-27')
         self.assertEqual(m['abstract'],'A method of providing power.')
+
+    def test_ipc_digit_confusions_and_spacing(self):
+        value = 'HO02J 3 / 00 ( 2006 . 01 )\nH02 ) 1 / 00 (2006.01)'
+        self.assertEqual(normalize_classification(value), 'H02J 3/00 (2006.01)\nH02J 1/00 (2006.01)')
+        self.assertEqual(normalize_classification('H01L 23/00 (2006.01)'), 'H01L 23/00 (2006.01)')
+
+    def test_abstract_wraps_and_split_words(self):
+        value = 'A method of providing power to computer systems in a\ncomputer data center; transform-\ning high - voltage power and medium-\nvoltage converters .'
+        self.assertEqual(normalize_abstract(value), 'A method of providing power to computer systems in a computer data center; transforming high-voltage power and medium-voltage converters.')
+        self.assertEqual(normalize_abstract('transform\ning the signal'), 'transforming the signal')
+        self.assertEqual(normalize_abstract('一种电源模\n块。\n所述模块供电。'), '一种电源模块。所述模块供电。')
+
+    def test_short_words_with_shifted_boxes_stay_in_line(self):
+        from dashboard_patent_text import _rows
+        self.assertEqual(_rows([(0, 10, 10, 18, 'providing'), (15, 13, 25, 21, 'power'),
+                                (30, 10, 40, 18, 'to'), (0, 30, 10, 38, 'computer')]),
+                         ['providing power to', 'computer'])
 
     def test_cover_declarations_detect_incomplete_extraction(self):
         quality,warnings=check_declared_counts('24 Claims, 7 Drawing Sheets', {'basic':[1], 'claims':[], 'description':[], 'drawings':[2]}, 0)

@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 import statistics
 
-PARSER_VERSION = 3
+PARSER_VERSION = 4
 US_NUMBER = re.compile(r"\bUS\s*0?\d[\d\s,]*\s*[AB]\s*\d?\b", re.I)
 CN_NUMBER = re.compile(r"\bCN\s*\d{7,12}\s*[A-Z]\d?\b", re.I)
 CLAIM_HEADING = re.compile(r"^(?:(?:what\s+is|the\s+invention)\s+claimed\s+is|we\s+claim|i\s+claim)\s*[:.]?\s*$", re.I)
@@ -68,8 +68,20 @@ def classify_page(text, previous=None):
 def _rows(words):
     if not words:
         return []
+    abstract_heading = next((w for w in words if w[4].upper() == 'ABSTRACT'), None)
+    if abstract_heading and all(len(w) > 5 and isinstance(w[5], tuple) for w in words):
+        # Preserve OCR baselines in the abstract. Bibliographic tags above it
+        # can be separate OCR blocks and still need geometric alignment.
+        boundary = abstract_heading[3]
+        before = [w for w in words if (w[1] + w[3]) / 2 <= boundary]
+        lines = {}
+        for word in words:
+            if (word[1] + word[3]) / 2 > boundary:
+                lines.setdefault(word[5], []).append(word)
+        ordered = sorted(lines.values(), key=lambda line: statistics.median((w[1] + w[3]) / 2 for w in line))
+        return _rows([w[:5] for w in before]) + [" ".join(w[4] for w in sorted(line, key=lambda w: w[0])) for line in ordered]
     heights = [w[3]-w[1] for w in words if w[3]>w[1]]
-    tolerance = max(1.5, min(4, statistics.median(heights)*.23))
+    tolerance = max(1.5, min(6, statistics.median(heights)*.45))
     rows = []
     for word in sorted(words, key=lambda w: ((w[1]+w[3])/2, w[0])):
         y = (word[1]+word[3])/2
@@ -133,7 +145,7 @@ def ocr_reading_order(tokens, country, raw):
     # OCR boxes are normalized; the column algorithm is scale-independent.
     words = [(t["box"][0]*1000, t["box"][1]*1000,
               (t["box"][0]+t["box"][2])*1000, (t["box"][1]+t["box"][3])*1000,
-              t["text"]) for t in tokens]
+              t["text"], tuple(t["line"]) if t.get("line") else None) for t in tokens]
     return order_words(words, 1000, 1000, country, raw)
 
 
@@ -205,6 +217,38 @@ def parse_claims(text):
     return claims
 
 
+def normalize_classification(text):
+    # Apply OCR digit corrections only within the numeric class positions.
+    pattern = r"(?<![A-Z0-9])([A-HY])\s*([0-9OIlZ]{2,3})\s*([A-Z)])\s*(\d{1,4})\s*/\s*(\d{2,6})(?:\s*[（(]\s*(\d{4})\s*\.\s*(\d{2})\s*[)）])?"
+    codes = []
+    for match in re.finditer(pattern, text):
+        section, cls, subclass, group, subgroup, year, month = match.groups()
+        cls = cls.translate(str.maketrans({'O': '0', 'I': '1', 'l': '1', 'Z': '2'}))
+        if len(cls) == 3:
+            if not cls.startswith('00'):
+                continue
+            cls = cls[1:]
+        code = f"{section}{cls}{'J' if subclass == ')' else subclass} {group}/{subgroup}"
+        if year:
+            code += f" ({year}.{month})"
+        if code not in codes:
+            codes.append(code)
+    return "\n".join(codes) if codes else text.strip()
+
+
+def normalize_abstract(text):
+    # Keep a printed hyphen on compounds but remove it for split word suffixes.
+    text = re.sub(r"([A-Za-z]+)-[ \t]*\n[ \t]*([a-z]+)",
+                  lambda m: m[1] + ("" if m[2] in {'ing', 'tion', 'tions', 'ment', 'ments', 'ness', 'ly', 'ed', 's', 'es'} else "-") + m[2], text)
+    text = re.sub(r"([A-Za-z]+)[ \t]*\n[ \t]*(ing|tion|tions|ment|ments|ness)\b", r"\1\2", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"(?<=[\u3400-\u9fff]) +(?=[\u3400-\u9fff，。；：])", "", text)
+    text = re.sub(r"([，。；：]) +(?=[\u3400-\u9fff])", r"\1", text)
+    text = re.sub(r"(?<=[A-Za-z])\s+-\s+(?=[A-Za-z])", "-", text)
+    text = re.sub(r"^[.·•:;\s-]+", "", text)
+    return re.sub(r"\s+([.,;:!?])", r"\1", text)
+
+
 def extract_metadata(text):
     """Read INID fields instead of treating the line after every tag as its value."""
     from datetime import datetime
@@ -238,14 +282,14 @@ def extract_metadata(text):
     if number.startswith('US0'):
         number = 'US'+number[2:].lstrip('0')
     classification = field('51', r'Int\s*\.\s*C[il]\s*\.|分类号')
-    classification = re.sub(r"([A-H])O(?=\d[A-Z])", r"\g<1>0", classification)
+    classification = normalize_classification(classification)
     abstract = field('57', r'摘要|ABSTRACT')
     abstract = re.split(r"\b\d+\s+Claims\b", abstract, flags=re.I)[0]
     abstract = re.sub(r"(?m)^\s*(?:CN|[AB])\s*$", "", abstract).strip()
     return {'title':title[:500], 'applicationNumber':application, 'applicationDate':date,
             'owner':applicant.splitlines()[0][:500] if applicant else '',
             'inventors':re.sub(r'\s*\n\s*', ' ', inventor)[:500],
-            'classification':classification[:500], 'abstract':abstract[:4000], 'publicationNumber':number}
+            'classification':classification[:500], 'abstract':normalize_abstract(abstract)[:4000], 'publicationNumber':number}
 
 
 def part_references(claims, description):

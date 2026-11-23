@@ -24,6 +24,7 @@ from dashboard_database import connect
 from dashboard_patent_text import (
     PARSER_VERSION, classify_page, jurisdiction, reading_order, ocr_reading_order,
     split_sections, parse_claims, extract_metadata, part_references, check_declared_counts,
+    normalize_classification,
 )
 
 MAX_PDF_SIZE = 50 * 1024 * 1024
@@ -312,15 +313,15 @@ def ocr_page(pixmap, psm=3, digits=False, language=None):
         raise ValueError("OCR 未返回文字坐标，请检查 Tesseract 配置。")
     rows = []
     lines = {}
-    for item in csv.DictReader(io.StringIO(result.stdout.decode("utf-8")), delimiter="\t"):
+    for item in csv.DictReader(io.StringIO(result.stdout.decode("utf-8")), delimiter="\t", quoting=csv.QUOTE_NONE):
         text = (item.get("text") or "").strip()
         if not text:
             continue
         confidence = float(item["conf"])
         box = [int(item["left"]) / pixmap.width, int(item["top"]) / pixmap.height,
                int(item["width"]) / pixmap.width, int(item["height"]) / pixmap.height]
-        rows.append({"text": text, "confidence": round(confidence, 1), "box": box, "source": "ocr"})
         key = (item["block_num"], item["par_num"], item["line_num"])
+        rows.append({"text": text, "confidence": round(confidence, 1), "box": box, "source": "ocr", "line": key})
         lines.setdefault(key, []).append(text)
     text = "\n".join(" ".join(words) for words in lines.values())
     # Chinese tokens have no inter-word spaces in a patent's logical text.
@@ -351,12 +352,34 @@ def link_references(references, pages):
     return references
 
 
+def cover_classification(page, country, words):
+    if country != "US":
+        return ""
+    # INID 51 and the following 52 delimit the IPC block in the left column.
+    anchors = [w for w in words if re.fullmatch(r"[（(]?51[)）]?", w[4]) and w[0] < page.rect.width / 2]
+    for anchor in anchors:
+        end = [w[1] for w in words if re.fullmatch(r"[（(]?(?:52|58)[)）]?", w[4])
+               and abs(w[0] - anchor[0]) < 20 and w[1] > anchor[1]]
+        if not end:
+            continue
+        bounds = pdf_engine().Rect(max(0, anchor[0] - 8), max(0, anchor[1] - 2),
+                                   page.rect.width / 2, min(end) + 5)
+        pixmap = page.get_pixmap(matrix=pdf_engine().Matrix(4, 4), clip=bounds, alpha=False)
+        text, _ = ocr_page(pixmap, psm=6, language="eng")
+        text = re.sub(r"^.*?Int\s*\.\s*C[il]\s*\.\s*", "", text, flags=re.I | re.S)
+        classification = normalize_classification(text)
+        if re.match(r"[A-HY]\d{2}[A-Z] \d+/\d+", classification):
+            return classification
+    return ""
+
+
 def extract_document(path):
     result = {"status": "processing", "progress": 0, "pages": [], "claims": [], "references": [], "warnings": [], "parserVersion": PARSER_VERSION}
     try:
         engine = pdf_engine()
         sections = {"basic": [], "claims": [], "description": [], "drawings": []}
         previous = None
+        refined_classification = ""
         if not path.is_file():
             raise ValueError("原始 PDF 文件不存在，可能被手工改名或移走，请在页面重新上传。")
         with engine.open(path) as pdf:
@@ -380,6 +403,13 @@ def extract_document(path):
                     else:
                         pix = render_for_ocr(page)
                         try:
+                            if index == 0 and not country:
+                                # Identify the publication from its header before choosing
+                                # the OCR language for an image-only cover page.
+                                header = engine.Rect(0, 0, page.rect.width, page.rect.height * .28)
+                                header_pixmap = page.get_pixmap(matrix=engine.Matrix(2.5, 2.5), clip=header, alpha=False)
+                                header_text, _ = ocr_page(header_pixmap, language="eng")
+                                country = jurisdiction(header_text)
                             recognized, tokens = ocr_page(pix, language="eng" if country == "US" else None)
                             if recognized.strip():
                                 raw = recognized
@@ -393,6 +423,16 @@ def extract_document(path):
                                 result["warnings"].append(f"第 {index+1} 页未识别出文字，请对照原 PDF。")
                         except (ValueError, subprocess.TimeoutExpired) as exc:
                             result["warnings"].append(f"第 {index+1} 页：{exc}")
+                if index == 0 and ocr_enabled:
+                    cover_words = page.get_text("words")
+                    if used_ocr:
+                        cover_words = [(t["box"][0] * page.rect.width, t["box"][1] * page.rect.height,
+                                        (t["box"][0] + t["box"][2]) * page.rect.width,
+                                        (t["box"][1] + t["box"][3]) * page.rect.height, t["text"]) for t in tokens]
+                    try:
+                        refined_classification = cover_classification(page, country, cover_words)
+                    except (ValueError, subprocess.SubprocessError):
+                        result["warnings"].append("首页 IPC 区域 OCR 核对未完成，请对照原文。")
                 parts, previous = split_sections(text, previous, raw, index+1)
                 page_sections = list(dict.fromkeys(part["section"] for part in parts))
                 section = next(s for s in ("claims", "description", "drawings", "basic") if s in page_sections)
@@ -455,6 +495,8 @@ def extract_document(path):
         result["sectionPages"] = section_pages
         result["jurisdiction"] = country
         result["metadata"] = extract_metadata("\n".join(sections["basic"]))
+        if refined_classification:
+            result["metadata"]["classification"] = refined_classification
         result["description"] = "\n\n".join(sections["description"])
         result["claims"] = parse_claims("\n".join(sections["claims"]))
         result["references"] = link_references(extract_references(result["claims"], result["description"]), result["pages"])

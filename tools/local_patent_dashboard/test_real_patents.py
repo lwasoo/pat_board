@@ -57,11 +57,35 @@ class RealPatentTests(unittest.TestCase):
         self.assertEqual(a['expectedClaimCount'],24)
         self.assertEqual(a['metadata']['publicationNumber'],'US10211630B1')
         self.assertEqual(a['metadata']['title'],'DATA CENTER WITH LARGE MEDIUM VOLTAGE DOMAIN')
+        self.assertEqual(a['metadata']['classification'], 'H02J 3/00 (2006.01)\nH02J 1/00 (2006.01)')
+        self.assertNotIn('\n', a['metadata']['abstract'])
+        self.assertIn('providing power to computer systems', a['metadata']['abstract'])
+        self.assertIn('transforming the high-voltage power', a['metadata']['abstract'])
         self.assertIn('Google',a['metadata']['owner'])
         self.assertEqual(a['metadata']['applicationDate'],'2013-09-27')
         transformer = next(r for r in a['references'] if r['number']=='104')
         self.assertIn('transformer', transformer['name'].lower())
         self.assertTrue(any(m['page']==3 for m in transformer['matches']))
+
+    def test_us_cover_without_text_layer(self):
+        import tempfile
+        import pymupdf
+        source = FIXTURES / 'US10211630.pdf'
+        if not source.is_file():
+            self.skipTest(f'Real PDF fixture missing: {source}')
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'us-image-cover.pdf'
+            with pymupdf.open(source) as original, pymupdf.open() as scan:
+                page = original[0]
+                image = page.get_pixmap(matrix=pymupdf.Matrix(2.5, 2.5), alpha=False)
+                scan.new_page(width=page.rect.width, height=page.rect.height).insert_image(page.rect, stream=image.tobytes('png'))
+                scan.save(path)
+            a = self.analyze(str(path))
+        self.assertEqual(a['metadata']['classification'], 'H02J 3/00 (2006.01)\nH02J 1/00 (2006.01)')
+        self.assertNotIn('\n', a['metadata']['abstract'])
+        self.assertTrue(a['metadata']['abstract'].startswith('A method of providing power to computer systems in a computer data'))
+        self.assertIn('transforming the high-voltage power', a['metadata']['abstract'])
+        self.assertEqual(a['metadata']['title'], 'DATA CENTER WITH LARGE MEDIUM VOLTAGE DOMAIN')
 
     def test_cn119853429a(self):
         a = self.analyze('CN119853429A.pdf')
