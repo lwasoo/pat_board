@@ -12,6 +12,9 @@ $buildExit = 0
 try {
     if ($env:OS -ne "Windows_NT") { throw "请在 Windows 上运行 build.bat。" }
     Write-Host "企业专利统计看板 - 源码离线编译（需要本地构建环境）" -ForegroundColor Cyan
+    if (Test-Path -LiteralPath (Join-Path $PSScriptRoot '.offline-build\manifest.json')) {
+        & (Join-Path $PSScriptRoot 'restore_build_deps.ps1')
+    }
     if (-not $Python) {
         foreach ($candidate in @(".build-python\python.exe", ".build-venv\Scripts\python.exe", ".venv\Scripts\python.exe")) {
             $path = Join-Path $PSScriptRoot $candidate

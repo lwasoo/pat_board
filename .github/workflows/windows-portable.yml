@@ -8,9 +8,14 @@ on:
       - 'tools/local_patent_dashboard/**'
       - 'build.bat'
       - 'build.ps1'
+      - 'restore_build_deps.ps1'
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: offline-dependencies-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -21,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          persist-credentials: false
+          persist-credentials: true
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
@@ -97,3 +102,15 @@ jobs:
           path: outputs/patent-dashboard-source-offline-windows-x64.zip
           archive: false
           if-no-files-found: error
+
+      - name: Commit build dependencies to this branch
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .offline-build
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) { exit 0 }
+          git commit -m "Vendor verified Windows offline build dependencies"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          git push origin HEAD:trial/patent-reader

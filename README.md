@@ -4,11 +4,11 @@
 
 ## 直接使用
 
-下载包含源码与编译依赖的 `patent-dashboard-source-offline-windows-x64.zip`，完整解压后修改 `tools/local_patent_dashboard` 内的代码，再双击根目录 `build.bat` 编译。输出位于 `outputs/单机版专利看板`。
+拉取 `trial/patent-reader` 分支后，双击根目录 `build.bat`。首次运行会校验并解压仓库 `.offline-build` 内的依赖，随后离线编译。修改 `tools/local_patent_dashboard` 中的源码后，再次双击即可重新编译，输出位于 `outputs/单机版专利看板`。
 
-源码依赖包包含 `.build-python` 下的 Python、PyInstaller、PyMuPDF，以及 `tools/local_patent_dashboard/ocr` 下的 Tesseract、DLL 和中英文模型。换到另一台 Windows 10/11 x64 电脑时复制整个目录即可离线编译。
+仓库附带 Windows x64 的 Python、PyInstaller、PyMuPDF、Tesseract、DLL 和中英文模型。依赖压缩包以小于 GitHub 单文件限制的分卷提交到 Git，普通 `git clone` / `git pull` 即可获得。首次拉取仓库约需额外传输 146 MB，换电脑时也可复制完整仓库离线编译。
 
-包由 [GitHub Actions](https://github.com/lwasoo/pat_board/actions/workflows/windows-portable.yml?query=branch%3Atrial%2Fpatent-reader) 自动生成，在最近一次成功运行的 Artifacts 中下载。GitHub 自带的 Download ZIP 仅包含 Git 跟踪的源文件，编译依赖在上述源码依赖包中。
+依赖更新由 Windows 构建流程准备，校验、解压和离线编译通过后提交到当前分支。正常修改业务源码会复用已提交的依赖。
 
 ## 功能
 

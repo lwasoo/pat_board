@@ -134,15 +134,15 @@ OCR 引擎缺失时，不再逐页栅格化并重复同一错误：全扫描文�
 
 ## 一键构建 Windows 完整便携版
 
-### 下载源码及离线编译依赖
+### 从 Git 仓库获得源码与依赖
 
-更新分支中的程序、构建脚本时，GitHub Actions 自动生成 `patent-dashboard-source-offline-windows-x64.zip`。登录后在 [构建页面](https://github.com/lwasoo/pat_board/actions/workflows/windows-portable.yml?query=branch%3Atrial%2Fpatent-reader) 的成功运行中下载 Artifacts。
+`trial/patent-reader` 的 `.offline-build` 目录保存 Python、PyInstaller、PyMuPDF、OCR 引擎、DLL 和模型的 ZIP 分卷及 SHA-256 清单。正常 `git clone` 或 `git pull` 后双击根目录 `build.bat`，脚本在本地校验、合并、解压依赖，再编译源码。无需另行下载安装包，也无需 Git LFS。
 
-完整解压后可直接编辑 Python、HTML、JS、CSS，再双击根目录 `build.bat`。源码包自带完整 Python 安装和 PyInstaller、PyMuPDF，编译时优先使用 `.build-python/python.exe`；OCR 引擎、DLL 与模型位于源码的 `ocr` 下。
+首次解压后的 Python 位于 `.build-python`，OCR 依赖位于源码目录的 `ocr`。解压目录不会重复提交到 Git。修改 Python、HTML、JS、CSS 后再次运行 `build.bat` 即可。
 
-工作流在含中文和空格的目录中，用包内 Python、源码和依赖实际编译。检查时清除系统 Python 路径和用户包路径，禁止 pip 索引并设置不可用的下载代理。应用与 OCR 检查通过后再上传源码依赖 ZIP，其中不包含验证时生成的应用输出。
+GitHub Windows 工作流生成分卷后，会移除验证目录中的已解压依赖，通过正常构建入口重新恢复并编译，检查通过才将依赖提交到当前分支。编译检查限制系统 PATH、用户 Python 包路径和下载代理。
 
-请复制整个目录到其他 Windows 10/11 x64 电脑，包括 `.build-python` 和 `ocr`。GitHub 的源码 Download ZIP 不包含这些二进制依赖。
+首次拉取约额外传输 146 MB，之后未更新的依赖由 Git 复用。源码依赖 ZIP 仍可在成功的 Actions 运行中下载，用于整包复制。
 
 ### 在已有依赖的电脑离线编译源码
 

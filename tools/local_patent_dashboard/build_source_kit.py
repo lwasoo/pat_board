@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -12,6 +14,36 @@ import tempfile
 import zipfile
 
 from build_windows import REPO, ROOT, copy_models, copy_runtime, find_runtime
+
+
+def vendor_dependencies(kit, temporary):
+    vendor = REPO / '.offline-build'
+    fingerprint = hashlib.sha256()
+    for name in ('build-requirements.txt', 'requirements.txt', 'setup_ocr.py', 'ocr_installer.py'):
+        fingerprint.update((ROOT / name).read_bytes())
+    requirements_hash = fingerprint.hexdigest()
+    manifest_path = vendor / 'manifest.json'
+    if manifest_path.is_file() and json.loads(manifest_path.read_text())['requirementsHash'] == requirements_hash:
+        return
+    archive = temporary / 'dependencies.zip'
+    directories = ['.build-python', 'tools/local_patent_dashboard/ocr/tesseract', 'tools/local_patent_dashboard/ocr/tessdata']
+    with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as output:
+        for directory in directories:
+            for path in sorted((kit / directory).rglob('*')):
+                if path.is_file() and '__pycache__' not in path.parts:
+                    output.write(path, path.relative_to(kit))
+    vendor.mkdir(exist_ok=True)
+    for path in vendor.glob('dependencies.zip.*'):
+        path.unlink()
+    parts = []
+    digest = hashlib.sha256()
+    with archive.open('rb') as source:
+        while data := source.read(48 * 1024 * 1024):
+            digest.update(data)
+            name = f'dependencies.zip.{len(parts) + 1:03d}'
+            (vendor / name).write_bytes(data)
+            parts.append({'name': name, 'sha256': hashlib.sha256(data).hexdigest()})
+    manifest_path.write_text(json.dumps({'requirementsHash': requirements_hash, 'sha256': digest.hexdigest(), 'parts': parts}, indent=2) + '\n')
 
 
 def build_source_kit(tesseract):
@@ -29,7 +61,7 @@ def build_source_kit(tesseract):
         kit.mkdir()
         tracked = subprocess.check_output(['git', 'ls-files', '-z'], cwd=REPO)
         for filename in tracked.decode('utf-8').split('\0'):
-            if not filename:
+            if not filename or filename.startswith('.offline-build/'):
                 continue
             source = REPO / filename
             if source.is_symlink():
@@ -74,6 +106,16 @@ def build_source_kit(tesseract):
         subprocess.run([str(powershell), '-NoProfile', '-ExecutionPolicy', 'Bypass',
                         '-File', str(kit / 'build.ps1'), '-NoPause'],
                        cwd=kit, env=env, check=True)
+        vendor_dependencies(kit, Path(temporary))
+        # Verify restoring the Git-tracked dependency parts through build.bat's
+        # normal entry point, with the previously unpacked runtime removed.
+        shutil.copytree(REPO / '.offline-build', kit / '.offline-build')
+        for directory in (python_home, app / 'ocr/tesseract', app / 'ocr/tessdata'):
+            shutil.rmtree(directory)
+        subprocess.run([str(powershell), '-NoProfile', '-ExecutionPolicy', 'Bypass',
+                        '-File', str(kit / 'build.ps1'), '-NoPause'],
+                       cwd=kit, env=env, check=True)
+        shutil.rmtree(kit / '.offline-build')
         # The artifact delivers source + dependencies. Compilation above only
         # verifies that a recipient can build it on a clean computer.
         shutil.rmtree(kit / 'outputs')
