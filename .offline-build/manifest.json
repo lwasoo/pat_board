@@ -1,0 +1,22 @@
+{
+  "requirementsHash": "568249efe2767cc5b04caa7120c81ae4398130b707c3fa2735a0cebe53d61689",
+  "sha256": "0d0811f04116b6ef19b194a7d437bc6e2dd9379ecf1ee1300173c0aa4a862f53",
+  "parts": [
+    {
+      "name": "dependencies.zip.001",
+      "sha256": "d78cdd19d833defcb3a4177444e9976f6794d18887637483b58addd088e544ad"
+    },
+    {
+      "name": "dependencies.zip.002",
+      "sha256": "df83fba8286385494dc427d83011be7b83c8367b7dab19abb502e2a908446196"
+    },
+    {
+      "name": "dependencies.zip.003",
+      "sha256": "1792170b19c4969c93cfd0ae606ad9fc855595e33a0e452d9c4e957f387eeed8"
+    },
+    {
+      "name": "dependencies.zip.004",
+      "sha256": "80eccf0f46d7b5cfadfa11679fdad703538bf2497e6464a3525351ab32dd3464"
+    }
+  ]
+}
