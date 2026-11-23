@@ -1,0 +1,60 @@
+name: Windows portable bundle
+
+on:
+  push:
+    branches: [trial/patent-reader]
+    paths:
+      - '.github/workflows/windows-portable.yml'
+      - 'tools/local_patent_dashboard/**'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.11'
+          architecture: x64
+          cache: pip
+          cache-dependency-path: |
+            tools/local_patent_dashboard/build-requirements.txt
+            tools/local_patent_dashboard/requirements.txt
+
+      - name: Prepare build dependencies
+        shell: pwsh
+        run: python -m pip install -r tools/local_patent_dashboard/build-requirements.txt
+
+      - name: Stage verified OCR engine and models
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'tesseract-setup.exe'
+          $ocrRoot = Join-Path $env:RUNNER_TEMP 'patent-tesseract'
+          python tools/local_patent_dashboard/ocr_installer.py --download $installer
+          if ($LASTEXITCODE -ne 0) { throw 'Could not download the verified Tesseract installer.' }
+          # Extract the runtime without executing the installer or copying its plugins.
+          $sevenZip = Join-Path $env:ProgramFiles '7-Zip\7z.exe'
+          & $sevenZip x -y "-o$ocrRoot" '-x!$PLUGINSDIR' $installer
+          if ($LASTEXITCODE -ne 0) { throw 'Could not extract the Tesseract runtime.' }
+          $engine = Join-Path $ocrRoot 'tesseract.exe'
+          if (-not (Test-Path -LiteralPath $engine -PathType Leaf)) { throw 'Tesseract executable missing.' }
+          "PATENT_CI_TESSERACT=$engine" >> $env:GITHUB_ENV
+          python tools/local_patent_dashboard/setup_ocr.py
+
+      - name: Build and verify portable ZIP
+        shell: pwsh
+        run: python tools/local_patent_dashboard/build_windows.py --tesseract "$env:PATENT_CI_TESSERACT" --portable-zip
+
+      - name: Upload the ready-to-use ZIP
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          path: outputs/patent-dashboard-windows-x64.zip
+          archive: false
+          if-no-files-found: error

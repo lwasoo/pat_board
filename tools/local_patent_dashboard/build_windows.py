@@ -207,7 +207,7 @@ def publish_bundle(bundle, target, archive=None, archive_target=None):
         print(f'新便携包已生成；旧版本备份暂时被占用，可稍后清理：{backup}')
 
 
-def build(explicit=None, output=None):
+def build(explicit=None, output=None, *, portable_zip=False):
     if sys.platform != 'win32' or struct.calcsize('P') != 8:
         raise ValueError('请在 64 位 Windows 上运行 build.bat，以生成 Windows 便携版。')
     executable = find_runtime(explicit)
@@ -233,13 +233,24 @@ def build(explicit=None, output=None):
             raise ValueError('未生成看板 EXE。')
         copy_runtime(executable,bundle/'ocr/tesseract')
         copy_models(ROOT/'ocr/tessdata',bundle/'ocr/tessdata')
+        if portable_zip:
+            write_launcher(bundle)
         # Validate after moving to a different path, including spaces and CJK.
         relocated = temporary/'移位验证 portable'
         bundle.replace(relocated)
         validate_runtime(relocated)
-        publish_bundle(relocated,target)
-    for name in ('start.bat', '使用说明.txt', 'build-info.json'):
-        (target/name).unlink(missing_ok=True)
+        if portable_zip:
+            archive_name = 'patent-dashboard-windows-x64.zip'
+            archive = temporary / archive_name
+            archive_target = target.parent / archive_name
+            make_archive(relocated, archive)
+            publish_bundle(relocated, target, archive, archive_target)
+            print(f'便携 ZIP：{archive_target}')
+        else:
+            publish_bundle(relocated, target)
+    if not portable_zip:
+        for name in ('start.bat', '使用说明.txt', 'build-info.json'):
+            (target/name).unlink(missing_ok=True)
     print(f'输出目录：{target}\n直接双击 EXE；保留 ocr 文件夹。')
 
 
@@ -248,6 +259,7 @@ def main():
     parser.add_argument('--find-tesseract',action='store_true')
     parser.add_argument('--tesseract')
     parser.add_argument('--output')
+    parser.add_argument('--portable-zip', action='store_true', help='生成含启动 BAT 的分发 ZIP')
     args = parser.parse_args()
     try:
         if args.find_tesseract:
@@ -256,7 +268,7 @@ def main():
                 print(executable)
                 return 0
             return 3
-        build(args.tesseract,args.output)
+        build(args.tesseract, args.output, portable_zip=args.portable_zip)
         return 0
     except (ValueError,OSError,subprocess.SubprocessError) as exc:
         print(f'打包失败：{exc}',file=sys.stderr)

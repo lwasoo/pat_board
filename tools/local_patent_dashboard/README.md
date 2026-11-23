@@ -134,6 +134,14 @@ OCR 引擎缺失时，不再逐页栅格化并重复同一错误：全扫描文�
 
 ## 一键构建 Windows 完整便携版
 
+### 下载成品
+
+更新 `trial/patent-reader` 分支中的程序或打包流程时，GitHub Actions 会在 Windows 运行器上准备构建依赖，解包已校验的 Tesseract 引擎，下载并校验模型，再生成程序和 ZIP。移位后的 OCR 和应用依赖检查通过后，工作流才会上传成品。
+
+登录 GitHub，打开 [Windows portable bundle](https://github.com/lwasoo/pat_board/actions/workflows/windows-portable.yml?query=branch%3Atrial%2Fpatent-reader) 最近一次成功运行，在 Artifacts 下载 `patent-dashboard-windows-x64.zip`。完整解压后双击 `start.bat` 或 EXE。可以用 U 盘将同一份 ZIP 带到其他 Windows 10/11 x64 电脑使用。
+
+### 在已有依赖的电脑离线编译源码
+
 在 64 位 Windows 上双击项目根目录的 `build.bat`：
 
 1. 复用项目 `.build-venv`、`.venv` 或指定的 Python 3.10+（64 位）环境。
@@ -142,27 +150,23 @@ OCR 引擎缺失时，不再逐页栅格化并重复同一错误：全扫描文�
 4. 校验本地中英文模型，将 Tesseract、依赖 DLL 和许可文件一起收集到输出；模型缺失或损坏时停止，不联网下载。
 5. 将包移到另一个含空格及中文的目录，以不含原安装目录的 PATH 验证引擎启动、模型加载、
    两个模型的实际识别，以及打包后的应用运行依赖。检查不通过会停止发布输出。
-6. 生成便携目录和 ZIP。更新输出只替换程序管理的文件，既有 `data` 目录保持原样；
-   分发 ZIP 从干净的构建目录生成，不包含打包电脑的业务数据库和上传文件。
+6. 生成 `outputs/单机版专利看板`。更新输出只替换程序管理的文件，既有 `data` 目录保持原样。
 
-输出：
+GitHub 构建会额外将以下文件打成 `outputs/patent-dashboard-windows-x64.zip`。分发 ZIP 从干净的构建目录生成：
 
 ```text
-outputs/
-  企业专利统计看板-便携版.zip
-  单机版专利看板/
-    企业专利统计看板.exe
-    start.bat
-    使用说明.txt
-    build-info.json
-    ocr/
-      tesseract/  # 引擎及依赖 DLL
-      tessdata/   # chi_sim、eng 及模型许可证
+企业专利统计看板/
+  企业专利统计看板.exe
+  start.bat
+  使用说明.txt
+  ocr/
+    tesseract/  # 引擎及依赖 DLL
+    tessdata/   # chi_sim、eng 及模型许可证
 ```
 
 使用电脑完整解压 ZIP 后直接双击 EXE，无需安装 Python、Tesseract 或手工设置变量。
 `start.bat` 只是可选检查入口；EXE 自动寻找相邻的 OCR 目录。
-不要只发送单个 EXE。构建和运行均不自动联网下载，构建电脑需事先具备本地依赖。
+分发时请复制整个 ZIP 或便携目录。Python 运行时和 PyMuPDF 随 EXE 一起打包，OCR 引擎、DLL 和模型在相邻的 `ocr` 目录。PyInstaller 只在编译时使用。
 
 可选参数（在项目根目录的 PowerShell 中运行）：
 
