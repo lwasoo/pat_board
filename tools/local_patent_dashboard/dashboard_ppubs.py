@@ -141,6 +141,7 @@ class PpubsClient:
                         'Referer': BASE + '/pubwebapp/'}
         self.deadline = time.monotonic() + 55
         self.case_id = None
+        self.document = None
 
     def request(self, path, payload=None, method='GET', binary=False, text=False):
         remaining = self.deadline - time.monotonic()
@@ -232,9 +233,9 @@ class PpubsClient:
 
 
     def download_pdf(self, number):
-        # Resolve the exact version again and use the same public session for
-        # its print job. Text and image retrieval are separate PPUBS operations.
-        self.fetch(publication_number(number))
+        requested = publication_number(number)
+        if not self.document or publication_number(self.document.get('guid')) != requested:
+            self.fetch(requested)
         raw = self.document
         try:
             count = int(raw.get('pageCount') or 0)

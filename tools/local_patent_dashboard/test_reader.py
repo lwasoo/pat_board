@@ -99,7 +99,10 @@ class PpubsTests(unittest.TestCase):
         thread.start()
         try:
             with patch.object(ppubs, 'BASE', f'http://127.0.0.1:{server.server_port}'):
-                result = ppubs.PpubsClient().fetch(NUMBER)
+                client = ppubs.PpubsClient()
+                result = client.fetch(NUMBER)
+                self.assertEqual(client.download_pdf(NUMBER), pdf_bytes)
+                self.assertEqual(observed.count('/pubwebapp/'), 1)
                 partial = ppubs.PpubsClient().fetch('20250337340')
                 self.assertEqual(partial['source']['publicationNumber'], NUMBER)
                 hits.append({'guid': 'US-20250337340-A9', 'type': 'US-PGPUB'})
@@ -152,6 +155,42 @@ class ReaderTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as caught:
             self.request(f'/api/reader/pdf?id={item_id}', 'POST')
         self.assertEqual(caught.exception.code, 400)
+
+    def test_open_cached_text_only_downloads_missing_pdf_once(self):
+        item_id = reader.create_item({'publicationNumber': NUMBER})['id']
+        text = ppubs.convert_document(RAW, NUMBER)
+        reader._save_cache(f'library:{item_id}', {'status': 'ready', 'data': text})
+        with patch.object(reader.PpubsClient, 'fetch') as fetch, patch.object(
+                reader.PpubsClient, 'download_pdf', side_effect=ValueError('无图像')) as download:
+            for _ in range(2):
+                self.assertEqual(self.request(f'/api/reader/prepare?id={item_id}', 'POST')['data'], text)
+                reader._WORKER.submit(lambda: None).result(timeout=5)
+            self.assertEqual(self.request(f'/api/reader/pdf?id={item_id}')['status'], 'failed')
+            download.assert_called_once_with(NUMBER)
+            fetch.assert_not_called()
+
+    def test_open_with_existing_pdf_only_fetches_text(self):
+        item_id = reader.create_item({'publicationNumber': NUMBER})['id']
+        with patch.object(documents, 'ocr_command', return_value=[]):
+            documents.upload_document(item_id, sample_pdf(), '已有原文.pdf', True)
+            with patch.object(reader.PpubsClient, 'fetch', return_value=ppubs.convert_document(RAW, NUMBER)) as fetch, patch.object(
+                    reader.PpubsClient, 'download_pdf') as download:
+                for _ in range(2):
+                    self.request(f'/api/reader/prepare?id={item_id}', 'POST')
+                self.assertEqual(self.wait_text(item_id)['status'], 'ready')
+                reader._WORKER.submit(lambda: None).result(timeout=5)
+                self.assertEqual(documents.document_record(item_id, True)['file_name'], '已有原文.pdf')
+                fetch.assert_called_once_with(NUMBER)
+                download.assert_not_called()
+            documents._WORKER.submit(lambda: None).result(timeout=10)
+
+    def test_open_non_us_or_unnumbered_item_stays_local(self):
+        with patch.object(reader.PpubsClient, 'fetch') as fetch:
+            for number in ['', 'CN119853429A']:
+                item_id = reader.create_item({'title': '本地文献', 'publicationNumber': number})['id']
+                self.assertEqual(self.request(f'/api/reader/prepare?id={item_id}', 'POST')['status'], 'empty')
+            reader._WORKER.submit(lambda: None).result(timeout=5)
+            fetch.assert_not_called()
 
     def test_failed_pdf_download_preserves_cached_text(self):
         item_id = self.request('/api/reader/items', 'POST', {'publicationNumber': NUMBER})['item']['id']

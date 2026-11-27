@@ -37,19 +37,22 @@ def main():
             expect(page.locator('.library-card')).to_have_count(1)
             page.locator('#addNumber').click()
             page.locator('#newNumber').fill(NUMBER[:-2])
-            page.locator('#createItem').click()
-            expect(page.locator('#patentTitle')).to_have_text(NUMBER[:-2])
             with patch.object(reader.PpubsClient, 'fetch', side_effect=ValueError('测试网络不可达，本地内容仍可阅读')):
-                page.locator('#fetchText').click()
+                page.locator('#createItem').click()
+                expect(page.locator('#patentTitle')).to_have_text(NUMBER[:-2])
                 expect(page.locator('#onlineStatus')).to_contain_text('测试网络不可达', timeout=10000)
             def resolve(number):
                 if number.endswith('A1'):
                     return convert_document(RAW, NUMBER)
                 raise PublicationChoices([{'publicationNumber': NUMBER}, {'publicationNumber': 'US20250337340A9'}])
-            with patch.object(reader.PpubsClient, 'fetch', side_effect=resolve):
+            with patch.object(reader.PpubsClient, 'fetch', side_effect=resolve), patch.object(
+                    reader.PpubsClient, 'download_pdf', side_effect=ValueError('测试原文图像服务不可达')) as download:
                 page.locator('#fetchText').click()
                 expect(page.locator('#versionChoices')).to_be_visible(timeout=10000)
+                download.assert_not_called()
                 page.locator(f'[data-version="{NUMBER}"]').click()
+                expect(page.locator('#pdfDownloadStatus')).to_contain_text('测试原文图像服务不可达', timeout=10000)
+                download.assert_called_once_with(NUMBER)
                 expect(page.locator('#onlineStatus')).to_contain_text('已缓存', timeout=10000)
                 expect(page.locator('#leftPane .claim')).to_have_count(2)
                 expect(page.locator('#leftPane .claim.dependent')).to_have_count(1)
@@ -64,10 +67,6 @@ def main():
                 expect(popup.locator('#rightPane')).to_contain_text('[0002]')
                 popup.close()
             page.screenshot(path=str(output / 'cached-text.png'))
-            with patch.object(reader.PpubsClient, 'download_pdf', side_effect=ValueError('测试原文图像服务不可达')):
-                page.locator('#fetchPdf').click()
-                expect(page.locator('#pdfDownloadStatus')).to_contain_text('测试原文图像服务不可达', timeout=10000)
-                expect(page.locator('#leftPane .claim')).to_have_count(2)
             with patch.object(reader.PpubsClient, 'download_pdf', return_value=sample_pdf()):
                 page.locator('#fetchPdf').click()
                 expect(page.locator('#documentStatus')).to_contain_text('识别完成', timeout=60000)
@@ -79,8 +78,23 @@ def main():
                 expect(page.locator('#leftPane .claim')).to_have_count(2)
                 page.screenshot(path=str(output / 'downloaded-drawings.png'))
 
+            page.reload()
+            expect(page.locator('#leftPane .claim')).to_have_count(2)
+            expect(page.locator('#rightPane [data-figure]')).to_have_count(1)
             page.get_by_role('link', name='返回文献库').last.click()
-            expect(page.locator('.library-card')).to_have_count(2)
+            with patch.object(reader.PpubsClient, 'fetch', return_value=convert_document(RAW, NUMBER)) as fetch, patch.object(
+                    reader.PpubsClient, 'download_pdf', return_value=sample_pdf()) as download:
+                page.locator('#addNumber').click()
+                page.locator('#newNumber').fill(NUMBER)
+                page.locator('#createItem').click()
+                expect(page.locator('#leftPane .claim')).to_have_count(2)
+                expect(page.locator('#rightPane [data-figure]')).to_have_count(1, timeout=60000)
+                page.reload()
+                expect(page.locator('#rightPane [data-figure]')).to_have_count(1)
+                fetch.assert_called_once_with(NUMBER)
+                download.assert_called_once_with(NUMBER)
+            page.get_by_role('link', name='返回文献库').last.click()
+            expect(page.locator('.library-card')).to_have_count(3)
             page.screenshot(path=str(output / 'library.png'))
             page.set_viewport_size({'width': 390, 'height': 844})
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
@@ -88,7 +102,7 @@ def main():
             with closing(connect()) as conn:
                 assert conn.execute('SELECT COUNT(*) FROM patents').fetchone()[0] == 1
                 assert conn.execute('SELECT COUNT(*) FROM fees').fetchone()[0] == 0
-                assert conn.execute('SELECT COUNT(*) FROM reading_items').fetchone()[0] == 2
+                assert conn.execute('SELECT COUNT(*) FROM reading_items').fetchone()[0] == 3
             assert not errors, errors
             browser.close()
             print('PASS: independent PDF library, no fee prerequisite, PPUBS failure, version selection, structured cached text, PDF download failure/retry, drawing panel, offline reload, popup and mobile layout')

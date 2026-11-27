@@ -24,6 +24,7 @@ def main():
         data['description'] = EXAMPLE
         # Deliberately use the old cache shape, with no new parser metadata.
         reader._save_cache(f'library:{item["id"]}', {'status': 'ready', 'data': data})
+        reader._save_cache(f'pdf:library:{item["id"]}', {'status': 'failed', 'publicationNumber': NUMBER, 'error': '离线'})
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True, executable_path=shutil.which('chromium'))
             page = browser.new_page(viewport={'width': 1500, 'height': 1050})

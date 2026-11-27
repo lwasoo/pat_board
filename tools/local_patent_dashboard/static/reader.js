@@ -28,6 +28,7 @@ function docURL(suffix='') { return (library ? '/api/reader/document' : '/api/pa
 function empty(title,detail='') { return `<div class="empty"><strong>${esc(title)}</strong>${esc(detail)}</div>`; }
 function requireDocument() {
   if (state.textSource === 'online' && state.online?.data) return null;
+  if (!state.document && state.online?.status === 'fetching') return empty('正在获取美国专利全文','匹配文献版本后将自动下载原文 PDF。');
   if (!state.document) return empty('上传专利 PDF，开始对照阅读','支持文字版与扫描版 PDF，最大 50 MB / 150 页。文件仅保存在本机。');
   if (analysis().status==='failed') return empty('识别未完成',analysis().message || '请检查 OCR 配置后重新识别，原 PDF 仍可查看。');
   if (analysis().status!=='ready') return empty('识别尚未完成','可先切换到原 PDF 阅读；文字结果将在识别完成后显示。');
@@ -128,6 +129,8 @@ function renderDescription() {
 }
 
 function renderDrawings(side) {
+  if (!state.document && state.pdfJob?.status === 'fetching') return empty('正在获取原文 PDF','下载并识别完成后，这里会显示附图。');
+  if (!state.document && state.pdfJob?.status === 'failed') return empty('原文 PDF 获取失败', state.pdfJob.error);
   const missing=requireDocument(); if(missing)return missing;
   const a=analysis(), pages=a.pages || [], figures=pages.filter(p=>p.section==='drawings');
   if(!figures.length)return empty('尚未识别出附图页','请重新识别，或切换原 PDF 核对。');
@@ -197,7 +200,9 @@ function statusUI() {
   $('download').href=docURL('/file');$('download').download=d?.fileName || '专利.pdf';
   $('upload').textContent=d?'↑ 更换 PDF':'↑ 上传专利 PDF';
   $('documentStatus').classList.toggle('error',a.status==='failed' || a.status==='interrupted' || a.quality?.passed===false);
-  $('documentStatus').innerHTML=!d?(state.online?.data?'电子全文已保存在本机，可上传 PDF 对照阅读。':'还没有专利文件 · 上传 PDF 后会按基本信息、权利要求、说明书、附图分类。'):`<span>${esc(d.fileName)}</span> · ${esc(a.message || '待识别')}${busy?`<progress value="${Number(a.progress || 0)}" max="100"></progress>`:''}${a.needsReanalysis?' · 识别规则已更新，请点击“重新识别”':''}${a.warnings?.length?` · ${a.warnings.length} 项待核对`:''}`;
+  const noFile = state.online?.status === 'fetching' ? '正在匹配美国专利，确认版本后将自动下载原文 PDF。' :
+    state.online?.data ? '电子全文已保存在本机，可直接阅读。' : '还没有专利文件 · 上传 PDF 后会按基本信息、权利要求、说明书、附图分类。';
+  $('documentStatus').innerHTML=!d?noFile:`<span>${esc(d.fileName)}</span> · ${esc(a.message || '待识别')}${busy?`<progress value="${Number(a.progress || 0)}" max="100"></progress>`:''}${a.needsReanalysis?' · 识别规则已更新，请点击“重新识别”':''}${a.warnings?.length?` · ${a.warnings.length} 项待核对`:''}`;
   clearTimeout(state.timer);
   if(busy)state.timer=setTimeout(()=>refreshDocument().catch(e=>{toast(e.message);state.timer=setTimeout(()=>refreshDocument().catch(e=>toast(e.message)),5000);}),1500);
   onlineUI();
@@ -207,10 +212,11 @@ async function refreshDocument() {
   state.document=(await api('/api/patents/document?id='+id)).document;
   if (!$('onlineNumber').value) $('onlineNumber').value = state.document?.analysis?.metadata?.publicationNumber || '';
   statusUI();
-  if(previous!==analysis().status || analysis().status==='ready') {
+  const status = state.document?.analysis?.status;
+  if(previous!==status || status==='ready') {
     const first=analysis().pages?.find(p=>p.section==='drawings');
     if(first && previous!=='ready')state.page.right=first.number;
-    if(analysis().status==='ready' && state.awaitingDrawings){state.tabs.right='drawings';state.awaitingDrawings=false;}
+    if(status==='ready' && state.awaitingDrawings){state.tabs.right='drawings';state.awaitingDrawings=false;}
     render();
   }
 }
@@ -259,7 +265,8 @@ function onlineUI() {
   const busy = result.status === 'fetching';
   $('fetchText').disabled = busy;
   $('fetchText').textContent = busy ? '正在获取…' : '获取美国全文';
-  $('fetchPdf').disabled = !result.data || !!state.document || state.pdfJob?.status === 'fetching';
+  $('fetchPdf').textContent = state.pdfJob?.status === 'failed' ? '重试原文 PDF / 附图' : '获取原文 PDF / 附图';
+  $('fetchPdf').disabled = busy || !result.data || !!state.document || state.pdfJob?.status === 'fetching';
   $('useOnline').disabled = !result.data;
   $('useOnline').classList.toggle('active', state.textSource === 'online');
   $('usePdf').classList.toggle('active', state.textSource === 'pdf');
@@ -269,25 +276,31 @@ function onlineUI() {
   $('versionChoices').querySelectorAll('[data-version]').forEach(button => { button.onclick = () => { $('onlineNumber').value = button.dataset.version; $('fetchText').click(); }; });
   $('onlineStatus').textContent = result.status === 'select_version' ? '查到多个文献版本，请选择完整公开号。' : result.status === 'failed' ? result.error : busy ? '正在连接 USPTO Public Search…' : result.data ? `已缓存 ${result.data.source.publicationNumber} · ${new Date(result.data.source.fetchedAt).toLocaleString()} · 可离线阅读` : '尚未获取电子全文';
 }
-async function refreshOnline() {
+async function refreshOnline(prepare = false) {
   clearTimeout(state.onlineTimer);
   const previous = state.online?.status;
-  state.online = await api('/api/reader/fulltext?id=' + id + '&scope=' + scope);
-  if (state.online.data && ((!state.document && !previous) || (previous === 'fetching' && state.online.status === 'ready'))) state.textSource = 'online';
+  const path = prepare ? '/api/reader/prepare' : '/api/reader/fulltext';
+  state.online = await api(path + '?id=' + id + '&scope=' + scope, {method: prepare ? 'POST' : 'GET'});
+  if (state.online.data && ((!previous && (library || !state.document)) || (previous === 'fetching' && state.online.status === 'ready'))) state.textSource = 'online';
   if (state.online.status === 'ready' && state.online.data) {
     const resolved = state.online.data.source.publicationNumber;
     $('onlineNumber').value = resolved;
     $('patentNumber').textContent = resolved;
+    if (state.patent.title === state.patent.publicationNumber && state.online.data.metadata?.title) {
+      $('patentTitle').textContent = state.online.data.metadata.title;
+      document.title = $('patentTitle').textContent + ' · 专利阅读';
+    }
   }
   if (!state.document && state.online.data) state.tabs.right = 'description';
   onlineUI();statusUI();render();
+  if (state.online.status === 'ready' && previous === 'fetching') await refreshPdf();
   if (state.online.status === 'fetching') state.onlineTimer = setTimeout(() => refreshOnline().catch(error => {
     $('onlineStatus').textContent = error.message;
   }), 1500);
 }
 $('fetchText').onclick = async () => {
   try {
-    state.online = await api('/api/reader/fulltext?id=' + id + '&scope=' + scope, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({publicationNumber:$('onlineNumber').value})});
+    state.online = await api('/api/reader/fulltext?id=' + id + '&scope=' + scope, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({publicationNumber:$('onlineNumber').value, includePdf:true})});
     onlineUI();await refreshOnline();broadcast({type:'fulltext'});
   } catch (error) { toast(error.message); }
 };
@@ -328,7 +341,14 @@ async function start() {
     if(!state.patent)throw new Error('专利不存在或已删除。');
     $('patentNumber').textContent=state.patent.publicationNumber || state.patent.applicationNumber || '本地文献';$('patentTitle').textContent=state.patent.title;document.title=state.patent.title+' · 专利阅读';
     $('patentTags').innerHTML=[state.patent.countryRegion,state.patent.patentType,state.patent.legalStatus].filter(Boolean).map((v,i)=>`<span class="tag ${i===2?'status':''}">${esc(v || '—')}</span>`).join('');
-    await refreshDocument();await refreshOnline();await refreshPdf();
+    await refreshDocument();
+    try {
+      await refreshOnline(!!state.patent.publicationNumber);
+    } catch (error) {
+      toast(error.message);
+      await refreshOnline();
+    }
+    await refreshPdf();
     if(query.get('mode')==='single')document.body.classList.add('single');
     if(query.get('side')==='right')document.body.classList.add('popout');
     const initial=query.get('tab');if(initial in tabs)state.tabs[query.get('side')==='right'?'right':'left']=initial;

@@ -1,4 +1,4 @@
-"""Independent reading library and opt-in, locally cached PPUBS text."""
+"""Independent reading library and locally cached PPUBS text and PDFs."""
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 import json
@@ -89,15 +89,16 @@ def fulltext_status(item_id, library):
         return cached
 
 
-def _fetch(key, version, requested, previous):
+def _fetch(key, version, requested, previous, item_id, library, include_pdf):
     try:
-        payload = {'status': 'ready', 'data': PpubsClient().fetch(requested), 'error': '', 'requested': requested}
+        client = PpubsClient()
+        payload = {'status': 'ready', 'data': client.fetch(requested), 'error': '', 'requested': requested}
     except PublicationChoices as exc:
         payload = {'status': 'select_version', 'data': previous, 'requested': requested, 'candidates': exc.candidates, 'error': str(exc)}
     except Exception as exc:
         message = str(exc) if isinstance(exc, ValueError) else '全文获取失败，请检查网络后重试。'
         payload = {'status': 'failed', 'data': previous, 'error': message, 'requested': requested}
-    with _LOCK:
+    with documents._LOCK, _LOCK:
         if _JOBS.get(key) == version:
             try:
                 _save_cache(key, payload)
@@ -107,11 +108,13 @@ def _fetch(key, version, requested, previous):
                     with closing(connect()) as conn, conn:
                         conn.execute('UPDATE reading_items SET title=CASE WHEN title=publication_number THEN ? ELSE title END, publication_number=? WHERE id=?',
                                      (title, number, int(key.split(':')[1])))
+                if include_pdf and payload['status'] == 'ready':
+                    _prepare_pdf(item_id, library, key, payload['data'], client)
             finally:
                 _JOBS.pop(key, None)
 
 
-def fetch_fulltext(item_id, library, value):
+def fetch_fulltext(item_id, library, value, include_pdf=False):
     requested = publication_number(value, allow_partial=True)
     record = item(item_id, library)
     known = record.get('publicationNumber') or ''
@@ -142,8 +145,42 @@ def fetch_fulltext(item_id, library, value):
         _save_cache(key, payload)
         version = uuid.uuid4().hex
         _JOBS[key] = version
-        _WORKER.submit(_fetch, key, version, requested, previous)
+        _WORKER.submit(_fetch, key, version, requested, previous, item_id, library, include_pdf)
         return payload
+
+
+def prepare_reading(item_id, library):
+    """Start only missing work when a numbered reading entry is opened."""
+    with documents._LOCK, _LOCK:
+        cached = fulltext_status(item_id, library)
+        record = item(item_id, library)
+        value = record['publicationNumber'] or ''
+        # Bare numbers in the multi-country ledger need a US jurisdiction.
+        if not library and not value.upper().lstrip().startswith('US') and record.get('countryRegion') != '美国':
+            return cached
+        try:
+            number = publication_number(value, allow_partial=True)
+        except ValueError:
+            return cached
+        if cached['status'] == 'empty':
+            return fetch_fulltext(item_id, library, number, include_pdf=True)
+        if cached['status'] == 'ready':
+            _prepare_pdf(item_id, library, cache_key(item_id, library), cached['data'])
+        return cached
+
+
+def _prepare_pdf(item_id, library, key, text, client=None):
+    # Callers hold both locks. Reopening a failed job must not loop on the provider.
+    if documents.document_record(item_id, library):
+        return
+    number = text['source']['publicationNumber']
+    job = pdf_status(item_id, library)
+    if job.get('publicationNumber') == number and job['status'] in {'fetching', 'failed'}:
+        return
+    try:
+        fetch_pdf(item_id, library, client=client)
+    except ValueError as exc:
+        _save_cache('pdf:' + key, {'status': 'failed', 'publicationNumber': number, 'error': str(exc)})
 
 
 def pdf_status(item_id, library):
@@ -156,9 +193,9 @@ def pdf_status(item_id, library):
         return result
 
 
-def _fetch_pdf(key, version, item_id, library, number):
+def _fetch_pdf(key, version, item_id, library, number, client):
     try:
-        data = PpubsClient().download_pdf(number)
+        data = (client or PpubsClient()).download_pdf(number)
         # Use the same lock order as deletion. A PDF uploaded while the network
         # request is running always takes precedence over the downloaded file.
         with documents._LOCK, _LOCK:
@@ -183,7 +220,7 @@ def _fetch_pdf(key, version, item_id, library, number):
                     _PDF_JOBS.pop(key, None)
 
 
-def fetch_pdf(item_id, library):
+def fetch_pdf(item_id, library, client=None):
     key = cache_key(item_id, library)
     with documents._LOCK, _LOCK:
         if key in _PDF_JOBS:
@@ -200,5 +237,5 @@ def fetch_pdf(item_id, library):
         _save_cache('pdf:' + key, result)
         version = uuid.uuid4().hex
         _PDF_JOBS[key] = version
-        _WORKER.submit(_fetch_pdf, key, version, item_id, library, number)
+        _WORKER.submit(_fetch_pdf, key, version, item_id, library, number, client)
         return result

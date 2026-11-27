@@ -13,7 +13,7 @@ function itemUrl(item) {
 function render() {
   const search = $('librarySearch').value.trim().toLowerCase();
   const matches = items.filter(item => [item.title, item.publicationNumber, item.fileName].join(' ').toLowerCase().includes(search));
-  $('libraryItems').innerHTML = matches.map(item => `<article class="library-card"><p class="muted">${esc(item.publicationNumber || '本地 PDF')}</p><h2><a href="${itemUrl(item)}">${esc(item.title)}</a></h2><p class="muted">${esc(item.fileName || '打开后可获取全文或上传 PDF')}</p><footer><a class="button primary" href="${itemUrl(item)}">打开阅读</a>${item.scope === 'library' ? `<button data-remove="${item.id}">删除</button>` : ''}</footer></article>`).join('') || '<div class="empty library-empty"><strong>暂无匹配文献</strong>添加公开号或上传专利 PDF，开始阅读。</div>';
+  $('libraryItems').innerHTML = matches.map(item => `<article class="library-card"><p class="muted">${esc(item.publicationNumber || '本地 PDF')}</p><h2><a href="${itemUrl(item)}">${esc(item.title)}</a></h2><p class="muted">${esc(item.fileName || '打开阅读或上传 PDF')}</p><footer><a class="button primary" href="${itemUrl(item)}">打开阅读</a>${item.scope === 'library' ? `<button data-remove="${item.id}">删除</button>` : ''}</footer></article>`).join('') || '<div class="empty library-empty"><strong>暂无匹配文献</strong>添加公开号或上传专利 PDF，开始阅读。</div>';
   $('libraryItems').querySelectorAll('[data-remove]').forEach(button => {
     button.onclick = async () => {
       if (!confirm('删除这条文献及本机保存的文件和全文？')) return;

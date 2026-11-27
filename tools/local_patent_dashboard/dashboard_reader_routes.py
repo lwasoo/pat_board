@@ -24,6 +24,8 @@ class ReaderRoutes:
                     raise ValueError('请求方式或条目编号无效。')
             elif route.path == '/api/reader/item' and method == 'GET' and item_id > 0:
                 self.json_response({'item': reader.item(item_id, library)})
+            elif route.path == '/api/reader/prepare' and method == 'POST' and item_id > 0:
+                self.json_response(reader.prepare_reading(item_id, library))
             elif route.path == '/api/reader/pdf' and item_id > 0:
                 if method == 'GET':
                     self.json_response(reader.pdf_status(item_id, library))
@@ -35,7 +37,9 @@ class ReaderRoutes:
                 if method == 'GET':
                     self.json_response(reader.fulltext_status(item_id, library))
                 elif method == 'POST':
-                    self.json_response(reader.fetch_fulltext(item_id, library, self.read_json().get('publicationNumber')), 202)
+                    body = self.read_json()
+                    self.json_response(reader.fetch_fulltext(item_id, library, body.get('publicationNumber'),
+                                                             include_pdf=body.get('includePdf') is True), 202)
                 else:
                     raise ValueError('请求方式无效。')
             else:
