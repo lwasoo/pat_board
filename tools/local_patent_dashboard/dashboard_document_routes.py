@@ -21,7 +21,7 @@ class DocumentRoutes:
             if patent_id <= 0:
                 raise ValueError("请选择专利。")
             if method == "GET" and route.path == base:
-                self.json_response(documents.document_status(patent_id, library))
+                self.json_response(documents.document_status(patent_id, library, query.get("capabilities") != ["0"]))
             elif method == "GET" and route.path in {base + "/file", base + "/page"}:
                 page = int(query.get("page", ["1"])[0]) if route.path.endswith("/page") else None
                 data, content_type, name = documents.document_file(patent_id, page, query.get("v", [None])[0], library)
@@ -42,6 +42,9 @@ class DocumentRoutes:
                     raise ValueError("PDF 上传不完整，请重试。")
                 self.json_response(documents.upload_document(patent_id, data,
                     query.get("filename", ["专利.pdf"])[0], library), 202)
+            elif method == "POST" and route.path == base + "/drawing-ocr":
+                body = self.read_json()
+                self.json_response(documents.request_drawing_ocr(patent_id, library, body.get("version"), body.get("task")), 202)
             elif method == "POST" and route.path == base + "/retry":
                 self.json_response(documents.retry_document(patent_id, library), 202)
             elif method == "PATCH" and route.path == base:

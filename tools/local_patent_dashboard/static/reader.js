@@ -133,12 +133,17 @@ function renderDrawings(side) {
   if (!state.document && state.pdfJob?.status === 'failed') return empty('原文 PDF 获取失败', state.pdfJob.error);
   const missing=requireDocument(); if(missing)return missing;
   const a=analysis(), pages=a.pages || [], figures=pages.filter(p=>p.section==='drawings');
+  const pdf = state.document?.analysis;
+  const retryOcr = pdf?.drawingError ? '<button data-drawing-ocr>重试附图 OCR</button>' : '';
+  if (!figures.length && pdf?.mode === 'drawings') return empty(
+    ['queued', 'processing'].includes(pdf.status) ? pdf.message : '尚未定位到附图页',
+    pdf.drawingError || '可在「原 PDF」中直接翻页。') + retryOcr;
   if(!figures.length)return empty('尚未识别出附图页','请重新识别，或切换原 PDF 核对。');
   const target=figures.find(p=>p.number===state.page[side]) || figures[0];
   state.page[side]=target.number;
   const reference=(a.references || []).find(r=>r.number===state.selected);
   const matches=reference?.matches.filter(m=>m.page===target.number) || [];
-  return `<div class="figure-toolbar"><select data-page aria-label="选择附图页面">${figures.map(p=>`<option value="${p.number}" ${p.number===target.number?'selected':''}>第 ${p.number} 页 · 附图</option>`).join('')}</select><button data-clear-annotations>撤销本页人工标注</button><button data-annotate>${state.annotation?'取消手工标注':'＋ 手工标注图号'}</button><span class="muted">${figures.length} 页附图，可向下滚动连续浏览</span></div>`+
+  return retryOcr + `<div class="figure-toolbar"><select data-page aria-label="选择附图页面">${figures.map(p=>`<option value="${p.number}" ${p.number===target.number?'selected':''}>第 ${p.number} 页 · 附图</option>`).join('')}</select><button data-clear-annotations>撤销本页人工标注</button><button data-annotate>${state.annotation?'取消手工标注':'＋ 手工标注图号'}</button><span class="muted">${figures.length} 页附图，可向下滚动连续浏览</span></div>`+
     (reference?`<div class="notice">当前部件：<b>${esc(reference.name)} (${esc(reference.number)})</b> · 本页 ${matches.length} 个候选位置。${matches.length?'请对照引线和原图核对。':'未找到匹配位置，可切换页面或手工标注。'}</div>`:'<div class="notice">点击另一栏权利要求中的部件编号，可高亮本页候选位置。</div>')+
     (state.annotation?'<p class="muted">点击图中编号位置，再输入正确的编号。手工标注会保存在当前 PDF 的识别结果中。</p>':'')+
     figures.map(p=>{
@@ -157,7 +162,12 @@ function renderPane(side) {
   if(tab==='pdf')body=state.document?`<iframe class="pdf-frame" title="原始专利 PDF" src="${docURL('/file')}#page=${state.page[side]}"></iframe><p class="muted">如果浏览器未显示 PDF，可使用顶部“下载原 PDF”。</p>`:requireDocument();
   root.innerHTML=`<nav class="pane-tabs" aria-label="${side==='left'?'左栏':'右栏'}内容">${Object.entries(tabs).map(([k,v])=>`<button data-tab="${k}" class="${k===tab?'active':''}">${v}</button>`).join('')}</nav><div class="pane-content">${body}</div>`;
   root.querySelector('.pane-content').scrollTop=oldScroll;
-  root.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{state.tabs[side]=b.dataset.tab;renderPane(side);root.querySelector('.pane-content').scrollTop=0;});
+  if (tab === 'drawings' && root.getClientRects().length) {
+    const retryOcr = root.querySelector('[data-drawing-ocr]');
+    if (retryOcr) retryOcr.onclick = () => prepareDrawings(true);
+    prepareDrawings();
+  }
+  root.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{if(side==='right')state.awaitingDrawings=false;state.tabs[side]=b.dataset.tab;renderPane(side);root.querySelector('.pane-content').scrollTop=0;});
   root.querySelectorAll('[data-filter]').forEach(b=>b.onclick=()=>{state.filters[side]=b.dataset.filter;renderPane(side);});
   root.querySelectorAll('[data-reference]').forEach(b=>b.onclick=()=>selectReference(b.dataset.reference,side,true));
   const page=root.querySelector('[data-page]');if(page)page.onchange=()=>{state.page[side]=+page.value;root.querySelector(`[data-figure="${page.value}"]`)?.scrollIntoView({block:'start',behavior:'smooth'});};
@@ -172,6 +182,25 @@ function renderPane(side) {
   });
 
 }
+async function prepareDrawings(retry = false) {
+  const pdf = state.document?.analysis;
+  if (pdf?.mode !== 'drawings' || pdf.status !== 'ready' || state.requestingDrawings || (pdf.drawingError && !retry)) return;
+  const reference = (analysis().references || []).find(r => r.number === state.selected);
+  const locateLabels = (reference && !reference.matches.length) || (retry && !pdf.pages.some(p => p.checkHeader));
+  const pending = pdf.pages.some(p => p.checkHeader || (locateLabels && p.section === 'drawings' && !p.labelsChecked));
+  if (!pending) return;
+  state.requestingDrawings = true;
+  try {
+    const result = await api('/api/patents/document/drawing-ocr?id='+id, {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({version:state.document.version, task:locateLabels ? 'labels' : 'sheets'})});
+    if (state.document?.version === result.document.version) {
+      state.document = result.document;
+      statusUI();render();broadcast({type:'document'});
+    }
+  } catch (error) { toast(error.message); }
+  finally { state.requestingDrawings = false; }
+}
 function render() {
   const title = state.patent?.title;
   $('patentTitle').textContent = title === state.patent?.publicationNumber && analysis().metadata?.title ? analysis().metadata.title : title || '专利详情';
@@ -185,7 +214,7 @@ function selectReference(number,side,broadcastEvent=false) {
   if(reference?.matches.length)state.page[target]=reference.matches[0].page;
   state.tabs[target]='drawings';render();
   $(target+'Pane').querySelector(`[data-figure="${state.page[target]}"]`)?.scrollIntoView({block:'start',behavior:'smooth'});
-  if(!reference?.matches.length)toast('尚未找到该编号的位置，可在附图中手工补标');
+  if(!reference?.matches.length && !state.requestingDrawings)toast('尚未找到该编号的位置，可在附图中手工补标');
   if(broadcastEvent)broadcast({type:'reference',number});
 }
 if(channel)channel.onmessage=async event=>{
@@ -196,7 +225,8 @@ if(channel)channel.onmessage=async event=>{
 };
 function statusUI() {
   const d=state.document,a=d?.analysis || {}, busy=d && ['queued','processing'].includes(a.status);
-  $('retry').hidden=!d || busy;$('review').hidden=!d || a.status!=='ready' || state.textSource==='online';$('download').hidden=!d;
+  $('retry').textContent = a.mode === 'drawings' ? '完整提取 PDF 文字' : '重新识别';
+  $('retry').hidden=!d || busy;$('review').hidden=!d || a.status!=='ready' || a.mode==='drawings' || state.textSource==='online';$('download').hidden=!d;
   $('download').href=docURL('/file');$('download').download=d?.fileName || '专利.pdf';
   $('upload').textContent=d?'↑ 更换 PDF':'↑ 上传专利 PDF';
   $('documentStatus').classList.toggle('error',a.status==='failed' || a.status==='interrupted' || a.quality?.passed===false);
@@ -209,15 +239,23 @@ function statusUI() {
 }
 async function refreshDocument() {
   const previous=state.document?.analysis.status;
-  state.document=(await api('/api/patents/document?id='+id)).document;
+  state.document=(await api('/api/patents/document?id='+id+'&capabilities=0')).document;
   if (!$('onlineNumber').value) $('onlineNumber').value = state.document?.analysis?.metadata?.publicationNumber || '';
   statusUI();
   const status = state.document?.analysis?.status;
   if(previous!==status || status==='ready') {
     const first=analysis().pages?.find(p=>p.section==='drawings');
-    if(first && previous!=='ready')state.page.right=first.number;
+    if(first && previous!=='ready'){
+      const match = analysis().references?.find(r => r.number === state.selected)?.matches?.[0];
+      for (const side of ['left', 'right']) if (state.tabs[side] === 'drawings') state.page[side] = match?.page || first.number;
+    }
     if(status==='ready' && state.awaitingDrawings){state.tabs.right='drawings';state.awaitingDrawings=false;}
     render();
+    if (status === 'ready' && previous !== 'ready' && state.selected) {
+      for (const side of ['left', 'right']) if (state.tabs[side] === 'drawings') {
+        $(side+'Pane').querySelector(`[data-figure="${state.page[side]}"]`)?.scrollIntoView({block:'start'});
+      }
+    }
   }
 }
 $('upload').onclick=()=>$('pdfFile').click();
@@ -232,7 +270,7 @@ $('pdfFile').onchange=async()=>{
   } catch(e){toast(e.message);} finally {$('upload').disabled=false;$('pdfFile').value='';}
 };
 $('retry').onclick=async()=>{
-  if(analysis().reviewed && !confirm('重新识别会替换人工校对结果，是否继续？'))return;
+  if(state.document?.analysis?.reviewed && !confirm('重新识别会替换人工校对结果，是否继续？'))return;
   try {state.document=(await api('/api/patents/document/retry?id='+id,{method:'POST'})).document;statusUI();render();broadcast({type:'document'});}catch(e){toast(e.message);}
 };
 $('review').onclick=()=>{
@@ -267,6 +305,8 @@ function onlineUI() {
   $('fetchText').textContent = busy ? '正在获取…' : '获取美国全文';
   $('fetchPdf').textContent = state.pdfJob?.status === 'failed' ? '重试原文 PDF / 附图' : '获取原文 PDF / 附图';
   $('fetchPdf').disabled = busy || !result.data || !!state.document || state.pdfJob?.status === 'fetching';
+  $('usePdf').disabled = state.document?.analysis?.mode === 'drawings';
+  $('usePdf').title = $('usePdf').disabled ? '正文使用电子全文。如需独立提取 PDF 文字，可点击「完整提取 PDF 文字」。' : '';
   $('useOnline').disabled = !result.data;
   $('useOnline').classList.toggle('active', state.textSource === 'online');
   $('usePdf').classList.toggle('active', state.textSource === 'pdf');
@@ -281,7 +321,7 @@ async function refreshOnline(prepare = false) {
   const previous = state.online?.status;
   const path = prepare ? '/api/reader/prepare' : '/api/reader/fulltext';
   state.online = await api(path + '?id=' + id + '&scope=' + scope, {method: prepare ? 'POST' : 'GET'});
-  if (state.online.data && ((!previous && (library || !state.document)) || (previous === 'fetching' && state.online.status === 'ready'))) state.textSource = 'online';
+  if (state.online.data && ((!previous && (library || !state.document || state.document.analysis.mode === 'drawings')) || (previous === 'fetching' && state.online.status === 'ready'))) state.textSource = 'online';
   if (state.online.status === 'ready' && state.online.data) {
     const resolved = state.online.data.source.publicationNumber;
     $('onlineNumber').value = resolved;

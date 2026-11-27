@@ -67,6 +67,23 @@ class RealPatentTests(unittest.TestCase):
         self.assertIn('transformer', transformer['name'].lower())
         self.assertTrue(any(m['page']==3 for m in transformer['matches']))
 
+    def test_us_download_indexes_native_drawings_without_ocr(self):
+        from unittest.mock import patch
+        import dashboard_documents as documents
+        source = FIXTURES / 'US10211630.pdf'
+        if not source.is_file():
+            self.skipTest(f'Real PDF fixture missing: {source}')
+        result = {'metadata': {'publicationNumber': 'US10211630B1'}, 'references': [
+            {'name': 'transformer', 'number': '104'}, {'number': '102'}]}
+        with patch.object(documents, 'ocr_page') as ocr:
+            documents.index_downloaded_drawings(source, result)
+            ocr.assert_not_called()
+        self.assertEqual(result['pageCount'], 22)
+        self.assertEqual([p['number'] for p in result['pages'] if p['section'] == 'drawings'], list(range(3, 10)))
+        self.assertFalse(any(p['checkHeader'] for p in result['pages']))
+        self.assertTrue(any(m['source'] == 'pdf' and m['page'] == 3 for m in result['references'][1]['matches']))
+        self.assertFalse(result['references'][0]['matches'])
+
     def test_us_cover_without_text_layer(self):
         import tempfile
         import pymupdf

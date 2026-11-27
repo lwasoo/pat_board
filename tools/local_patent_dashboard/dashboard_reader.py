@@ -206,7 +206,7 @@ def _fetch_pdf(key, version, item_id, library, number, client):
                 raise ValueError('当前电子全文版本已变化，请重新下载 PDF。')
             if documents.document_record(item_id, library):
                 raise ValueError('本机已经有 PDF，下载结果未替换已有文件。')
-            documents.upload_document(item_id, data, number + '.pdf', library)
+            documents.upload_document(item_id, data, number + '.pdf', library, online_text=current)
         result = {'status': 'ready', 'publicationNumber': number, 'error': ''}
     except Exception as exc:
         message = str(exc) if isinstance(exc, ValueError) else 'PDF 下载失败，请检查网络后重试。'

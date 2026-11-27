@@ -156,6 +156,39 @@ class ReaderTests(unittest.TestCase):
             self.request(f'/api/reader/pdf?id={item_id}', 'POST')
         self.assertEqual(caught.exception.code, 400)
 
+    def test_downloaded_scan_defers_header_and_label_ocr(self):
+        item_id = reader.create_item({'publicationNumber': NUMBER})['id']
+        text = ppubs.convert_document({**RAW, 'descriptionHtml': 'A transformer (104).'}, NUMBER)
+        scan = sample_pdf(scanned=True)
+        with patch.object(documents, 'ocr_page') as ocr:
+            saved = documents.upload_document(item_id, scan, 'original.pdf', True, online_text=text)['document']
+            documents._WORKER.submit(lambda: None).result(timeout=5)
+            self.assertEqual(documents.document_file(item_id, library=True)[0], scan)
+            def analysis():
+                return self.request(f'/api/reader/document?id={item_id}')['document']['analysis']
+            self.assertEqual(analysis()['status'], 'ready')
+            self.assertEqual(analysis()['mode'], 'drawings')
+            ocr.assert_not_called()
+            def run(task):
+                self.request(f'/api/reader/document/drawing-ocr?id={item_id}', 'POST',
+                             {'version': saved['version'], 'task': task})
+                documents._WORKER.submit(lambda: None).result(timeout=5)
+            ocr.side_effect = [('', []), ('', []), ('Sheet 1 of 1', [])]
+            run('sheets')
+            self.assertEqual([p['number'] for p in analysis()['pages'] if p['section'] == 'drawings'], [4])
+            self.assertEqual(ocr.call_count, 3)
+            for call in ocr.call_args_list:
+                self.assertLess(call.args[0].height, call.args[0].width)
+            label = {'text': '104', 'source': 'ocr', 'box': [.3, .4, .1, .1], 'confidence': 92}
+            ocr.side_effect = [('', [label]), ('', [])]
+            run('labels')
+            self.assertEqual(analysis()['references'][0]['matches'][0]['page'], 4)
+            run('labels')
+            self.assertEqual(ocr.call_count, 5)
+            with self.assertRaises(urllib.error.HTTPError):
+                self.request(f'/api/reader/document/drawing-ocr?id={item_id}', 'POST',
+                             {'version': 'old-file', 'task': 'labels'})
+
     def test_open_cached_text_only_downloads_missing_pdf_once(self):
         item_id = reader.create_item({'publicationNumber': NUMBER})['id']
         text = ppubs.convert_document(RAW, NUMBER)

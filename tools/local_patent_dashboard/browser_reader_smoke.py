@@ -7,6 +7,7 @@ from unittest.mock import patch
 from playwright.sync_api import sync_playwright, expect
 
 import dashboard_reader as reader
+import dashboard_documents as documents
 from dashboard_database import connect
 from test_documents import DocumentTests, sample_pdf
 from test_reader import RAW, NUMBER
@@ -69,12 +70,13 @@ def main():
             page.screenshot(path=str(output / 'cached-text.png'))
             with patch.object(reader.PpubsClient, 'download_pdf', return_value=sample_pdf()):
                 page.locator('#fetchPdf').click()
-                expect(page.locator('#documentStatus')).to_contain_text('识别完成', timeout=60000)
+                expect(page.locator('#documentStatus')).to_contain_text('原 PDF 已就绪', timeout=60000)
                 expect(page.locator('#rightPane [data-figure]')).to_have_count(1)
                 expect(page.locator('#fetchPdf')).to_be_disabled()
-                page.locator('#usePdf').click()
-                expect(page.locator('#leftPane .claim')).to_have_count(3)
-                page.locator('#useOnline').click()
+                expect(page.locator('#usePdf')).to_be_disabled()
+                page.locator('#rightPane [data-tab="pdf"]').click()
+                expect(page.locator('#rightPane iframe')).to_be_visible()
+                page.locator('#rightPane [data-tab="drawings"]').click()
                 expect(page.locator('#leftPane .claim')).to_have_count(2)
                 page.screenshot(path=str(output / 'downloaded-drawings.png'))
 
@@ -82,8 +84,11 @@ def main():
             expect(page.locator('#leftPane .claim')).to_have_count(2)
             expect(page.locator('#rightPane [data-figure]')).to_have_count(1)
             page.get_by_role('link', name='返回文献库').last.click()
-            with patch.object(reader.PpubsClient, 'fetch', return_value=convert_document(RAW, NUMBER)) as fetch, patch.object(
-                    reader.PpubsClient, 'download_pdf', return_value=sample_pdf()) as download:
+            numbered = convert_document({**RAW, 'descriptionHtml': '<p>[0001] A transformer (104).</p>'}, NUMBER)
+            label = {'text': '104', 'source': 'ocr', 'confidence': 95, 'box': [.3, .4, .05, .02]}
+            with patch.object(reader.PpubsClient, 'fetch', return_value=numbered) as fetch, patch.object(
+                    reader.PpubsClient, 'download_pdf', return_value=sample_pdf()) as download, patch.object(
+                    documents, 'ocr_page', return_value=('', [label])) as ocr:
                 page.locator('#addNumber').click()
                 page.locator('#newNumber').fill(NUMBER)
                 page.locator('#createItem').click()
@@ -91,6 +96,15 @@ def main():
                 expect(page.locator('#rightPane [data-figure]')).to_have_count(1, timeout=60000)
                 page.reload()
                 expect(page.locator('#rightPane [data-figure]')).to_have_count(1)
+                ocr.assert_not_called()
+                page.locator('#leftPane [data-reference="104"]').last.click()
+                expect(page.locator('#rightPane .number-box')).to_have_count(1, timeout=10000)
+                ocr_calls = ocr.call_count
+                assert ocr_calls == 2, ocr_calls
+                page.reload()
+                page.locator('#leftPane [data-reference="104"]').last.click()
+                expect(page.locator('#rightPane .number-box')).to_have_count(1)
+                assert ocr.call_count == ocr_calls
                 fetch.assert_called_once_with(NUMBER)
                 download.assert_called_once_with(NUMBER)
             page.get_by_role('link', name='返回文献库').last.click()

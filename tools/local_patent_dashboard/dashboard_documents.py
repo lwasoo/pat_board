@@ -22,7 +22,7 @@ from pathlib import Path
 import dashboard_config as settings
 from dashboard_database import connect
 from dashboard_patent_text import (
-    PARSER_VERSION, classify_page, jurisdiction, reading_order, ocr_reading_order,
+    PARSER_VERSION, is_drawing_sheet, classify_page, jurisdiction, reading_order, ocr_reading_order,
     split_sections, parse_claims, extract_metadata, part_references, check_declared_counts,
     normalize_classification,
 )
@@ -178,7 +178,7 @@ def record_missing_ocr(result, page_number):
 
 def normalize_completed_status(result):
     """Also correct legacy cached results that reported success with no content."""
-    if result.get("status") != "ready":
+    if result.get("status") != "ready" or result.get("mode") == "drawings":
         return
     missing = [w for w in result.get("warnings", []) if "未找到 Tesseract OCR 引擎" in w]
     if missing:
@@ -201,11 +201,11 @@ def normalize_completed_status(result):
         result["message"] = "已提取可用文字；未找到 Tesseract，扫描页或图号 OCR 未完成。"
 
 
-def document_status(patent_id, library=False):
+def document_status(patent_id, library=False, include_capabilities=True):
     with _LOCK:
         row = document_record(patent_id, library)
         if not row:
-            return {"document": None, "capabilities": capabilities()}
+            return {"document": None, "capabilities": capabilities()} if include_capabilities else {"document": None}
         path = managed_path(row["object_path"])
         analysis = read_analysis(path)
         normalize_completed_status(analysis)
@@ -217,7 +217,7 @@ def document_status(patent_id, library=False):
                              "analysis": analysis}}
 
 
-def upload_document(patent_id, data, file_name, library=False):
+def upload_document(patent_id, data, file_name, library=False, *, online_text=None):
     if not data or len(data) > MAX_PDF_SIZE or not data.startswith(b"%PDF-"):
         raise ValueError("请上传不超过 50 MB 的有效 PDF 文件。")
     engine = pdf_engine()
@@ -237,7 +237,12 @@ def upload_document(patent_id, data, file_name, library=False):
         path.write_bytes(data)
         relative = path.relative_to(settings.DATA_DIR).as_posix()
         try:
-            save_analysis(path, {"status": "queued", "message": "等待识别", "progress": 0})
+            initial = {"status": "queued", "message": "等待识别", "progress": 0}
+            if online_text:
+                initial.update(mode="drawings", message="正在读取 PDF 附图目录",
+                               metadata={"publicationNumber": online_text["source"]["publicationNumber"]},
+                               references=online_text["references"], pages=[], warnings=[], parserVersion=PARSER_VERSION)
+            save_analysis(path, initial)
             with closing(connect()) as conn, conn:
                 table = "reading_documents" if library else "patent_documents"
                 conn.execute(f"""INSERT INTO {table}(patent_id,object_path,file_name,content_type,size)
@@ -377,9 +382,131 @@ def cover_classification(page, country, words):
     return ""
 
 
+def native_labels(page):
+    labels = []
+    width, height = page.rect.width, page.rect.height
+    for word in page.get_text("words"):
+        if word[1] < .12*height or word[3] > .94*height:
+            continue
+        number = word[4].strip("()（）.,")
+        if re.fullmatch(r"\d{1,5}[a-zA-Z]?", number):
+            labels.append({"text": number, "box": [word[0]/width, word[1]/height,
+                (word[2]-word[0])/width, (word[3]-word[1])/height],
+                "source": "pdf", "confidence": 100})
+    return labels
+
+
+def add_ocr_labels(pix, labels):
+    candidates = []
+    for segmentation in (11, 6):
+        _, detected = ocr_page(pix, psm=segmentation, language='eng')
+        candidates.extend(detected)
+    for label in candidates:
+        label['text'] = label['text'].strip('()（）.,:;')
+        if re.fullmatch(r"\d{1,5}[a-zA-Z]?", label["text"]) and label["confidence"] >= 40 and .1 < label['box'][1] < .95:
+            if not any(l["text"] == label["text"] and abs(l["box"][0]-label["box"][0]) < .03 and abs(l["box"][1]-label["box"][1]) < .03 for l in labels):
+                labels.append(label)
+
+
+def drawing_regions(page):
+    figure_regions = []
+    captions = []
+    for block in page.get_text('dict', flags=pdf_engine().TEXTFLAGS_DICT & ~pdf_engine().TEXT_PRESERVE_IMAGES)['blocks']:
+        for line in block.get('lines', []):
+            caption = ''.join(span['text'] for span in line['spans']).strip()
+            if re.fullmatch(r'(?:FIG(?:URE)?\.?|图)\s*\d+[A-Za-z]?', caption, re.I):
+                x0,y0,x1,y1 = line['bbox']
+                captions.append((y0/page.rect.height, y1/page.rect.height, (x0+x1)/2/page.rect.width, caption))
+    # Split only vertically stacked figures with distinct caption rows.
+    captions.sort()
+    if len(captions)>1 and all(b[0]-a[1]>.05 for a,b in zip(captions,captions[1:])):
+        top = .1
+        for y0,y1,x,label in captions:
+            bottom = min(1,y1+.015)
+            figure_regions.append({'label':label,'top':top,'height':bottom-top})
+            top = bottom
+    return figure_regions
+
+
+def index_downloaded_drawings(path, result):
+    engine = pdf_engine()
+    task = result.pop("drawingTask", "index")
+    result.pop("drawingError", None)
+    with engine.open(path) as pdf:
+        result["pageCount"] = len(pdf)
+        if task == "index":
+            pages = []
+            for i, page in enumerate(pdf):
+                text = page.get_text(sort=True)
+                section = classify_page(text, None)
+                drawing = section == "drawings"
+                pages.append({"number": i + 1, "section": "drawings" if drawing else "other",
+                              "checkHeader": i > 0 and section == "basic" and len(re.sub(r"\s", "", text)) < 120,
+                              "labels": native_labels(page) if drawing else [],
+                              "figureRegions": drawing_regions(page) if drawing else [],
+                              "aspectRatio": page.rect.width / page.rect.height})
+            result["pages"] = pages
+        else:
+            try:
+                candidates = [p for p in result["pages"] if p["checkHeader"] or
+                              (task == "labels" and p["section"] == "drawings" and not p.get("labelsChecked"))]
+                for i, entry in enumerate(candidates):
+                    if entry["checkHeader"]:
+                        page = pdf[entry["number"] - 1]
+                        header = page.rect * engine.Matrix(1, .23)
+                        scale = min(2.5, 2400 / max(header.width, header.height))
+                        pix = page.get_pixmap(matrix=engine.Matrix(scale, scale), clip=header, alpha=False)
+                        text, _ = ocr_page(pix, psm=6, language="eng")
+                        if is_drawing_sheet(text):
+                            entry.update(section="drawings", labels=native_labels(page), figureRegions=drawing_regions(page))
+                        entry["checkHeader"] = False
+                    if task == "labels" and entry["section"] == "drawings" and not entry.get("labelsChecked"):
+                        page = pdf[entry["number"] - 1]
+                        add_ocr_labels(render_for_ocr(page), entry["labels"])
+                        entry["labelsChecked"] = True
+                    result.update(status="processing", progress=round(100 * (i + 1) / len(candidates)))
+                    with _LOCK:
+                        save_analysis(path, result)
+            except (ValueError, OSError, subprocess.SubprocessError) as exc:
+                result["drawingError"] = f"附图 OCR 未完成：{exc}"
+    link_references(result["references"], result["pages"])
+    result.update(status="ready", progress=100, message=result.get("drawingError") or "原 PDF 已就绪，正文使用电子全文。")
+
+
+def request_drawing_ocr(patent_id, library, version, task):
+    if task not in {"sheets", "labels"}:
+        raise ValueError("附图识别任务无效。")
+    with _LOCK:
+        row = document_record(patent_id, library)
+        if not row:
+            raise FileNotFoundError("尚未下载 PDF。")
+        path = managed_path(row["object_path"])
+        if version != path.parent.name:
+            raise ValueError("PDF 已更新，请刷新。")
+        result = read_analysis(path)
+        if result.get("mode") != "drawings":
+            raise ValueError("当前 PDF 使用完整识别。")
+        if str(path) not in _ACTIVE:
+            if len(_ACTIVE) >= 4:
+                raise ValueError("识别队列已满，请稍后再试。")
+            pending = any(p["checkHeader"] or (task == "labels" and p["section"] == "drawings"
+                          and not p.get("labelsChecked")) for p in result["pages"])
+            if pending:
+                result.update(status="queued", progress=0, drawingTask=task,
+                              message="正在定位扫描附图页" if task == "sheets" else "正在识别附图编号")
+                save_analysis(path, result)
+                queue_extraction(path)
+        return document_status(patent_id, library)
+
+
 def extract_document(path):
     result = {"status": "processing", "progress": 0, "pages": [], "claims": [], "references": [], "warnings": [], "parserVersion": PARSER_VERSION}
     try:
+        initial = read_analysis(path)
+        if initial.get("mode") == "drawings":
+            result = initial
+            index_downloaded_drawings(path, result)
+            return
         engine = pdf_engine()
         sections = {"basic": [], "claims": [], "description": [], "drawings": []}
         previous = None
@@ -442,29 +569,13 @@ def extract_document(path):
                 section = next(s for s in ("claims", "description", "drawings", "basic") if s in page_sections)
                 labels = []
                 if section == "drawings":
-                    width, height = page.rect.width, page.rect.height
-                    for word in page.get_text("words"):
-                        if word[1] < .12*height or word[3] > .94*height:
-                            continue
-                        number = word[4].strip("()（）.,")
-                        if re.fullmatch(r"\d{1,5}[a-zA-Z]?", number):
-                            labels.append({"text": number, "box": [word[0]/width, word[1]/height,
-                                (word[2]-word[0])/width, (word[3]-word[1])/height],
-                                "source": "pdf", "confidence": 100})
+                    labels = native_labels(page)
                     if not ocr_enabled:
                         record_missing_ocr(result, index+1)
                     else:
                         try:
                             pix = pix or render_for_ocr(page)
-                            candidates = []
-                            for segmentation in (11, 6):
-                                _, detected = ocr_page(pix, psm=segmentation, language='eng')
-                                candidates.extend(detected)
-                            for label in candidates:
-                                label['text'] = label['text'].strip('()（）.,:;')
-                                if re.fullmatch(r"\d{1,5}[a-zA-Z]?", label["text"]) and label["confidence"] >= 40 and .1 < label['box'][1] < .95:
-                                    if not any(l["text"] == label["text"] and abs(l["box"][0]-label["box"][0]) < .03 and abs(l["box"][1]-label["box"][1]) < .03 for l in labels):
-                                        labels.append(label)
+                            add_ocr_labels(pix, labels)
                         except (ValueError, subprocess.TimeoutExpired) as exc:
                             result["warnings"].append(f"第 {index+1} 页图号：{exc}")
                 for part in parts:
@@ -473,21 +584,7 @@ def extract_document(path):
                         section_pages[part["section"]].append(index+1)
                 figure_regions = []
                 if section == 'drawings':
-                    captions = []
-                    for block in page.get_text('dict')['blocks']:
-                        for line in block.get('lines', []):
-                            caption = ''.join(span['text'] for span in line['spans']).strip()
-                            if re.fullmatch(r'(?:FIG(?:URE)?\.?|图)\s*\d+[A-Za-z]?', caption, re.I):
-                                x0,y0,x1,y1 = line['bbox']
-                                captions.append((y0/page.rect.height, y1/page.rect.height, (x0+x1)/2/page.rect.width, caption))
-                    # Split only vertically stacked figures with distinct caption rows.
-                    captions.sort()
-                    if len(captions)>1 and all(b[0]-a[1]>.05 for a,b in zip(captions,captions[1:])):
-                        top = .1
-                        for y0,y1,x,label in captions:
-                            bottom = min(1,y1+.015)
-                            figure_regions.append({'label':label,'top':top,'height':bottom-top})
-                            top = bottom
+                    figure_regions = drawing_regions(page)
                 result["pages"].append({"number": index+1, "section": section, "text": text,
                     "figureRegions": figure_regions, "aspectRatio": page.rect.width/page.rect.height,
                     "ocr": used_ocr, "labels": labels, "uncertainWords": uncertain,
@@ -586,7 +683,8 @@ def correct_analysis(patent_id, payload, library=False):
                 raise ValueError("图号标注不正确。")
             page["section"] = "drawings"
             page["labels"].append({"text": number, "box": box, "source": "manual", "confidence": 100})
-        result["references"] = link_references(extract_references(result["claims"], result.get("description", "")), result["pages"])
+        refs = result["references"] if result.get("mode") == "drawings" else extract_references(result["claims"], result.get("description", ""))
+        result["references"] = link_references(refs, result["pages"])
         result["reviewed"] = True
         save_analysis(path, result)
         return document_status(patent_id, library)
