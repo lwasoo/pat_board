@@ -93,13 +93,15 @@ def _fetch(key, version, requested, previous):
         payload = {'status': 'failed', 'data': previous, 'error': message, 'requested': requested}
     with _LOCK:
         if _JOBS.get(key) == version:
-            _save_cache(key, payload)
-            if key.startswith('library:') and payload['status'] == 'ready':
-                title = payload['data']['metadata'].get('title')
-                if title:
-                    with closing(connect()) as conn, conn:
-                        conn.execute('UPDATE reading_items SET title=? WHERE id=? AND title=publication_number', (title, int(key.split(':')[1])))
-            _JOBS.pop(key, None)
+            try:
+                _save_cache(key, payload)
+                if key.startswith('library:') and payload['status'] == 'ready':
+                    title = payload['data']['metadata'].get('title')
+                    if title:
+                        with closing(connect()) as conn, conn:
+                            conn.execute('UPDATE reading_items SET title=? WHERE id=? AND title=publication_number', (title, int(key.split(':')[1])))
+            finally:
+                _JOBS.pop(key, None)
 
 
 def fetch_fulltext(item_id, library, value):
