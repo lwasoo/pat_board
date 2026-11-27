@@ -72,15 +72,61 @@ function renderClaims(side) {
   return controls+(list || empty('未识别出权利要求','请对照原 PDF，使用顶部校对入口补充。'))+
     card('部件与附图编号',`<p class="muted">点击部件编号在另一栏查看候选位置。OCR 和编号匹配需对照原图核对。</p><div class="refs-list">${refs.map(r=>`<button data-reference="${esc(r.number)}">${esc(r.name)} <b>${esc(r.number)}</b><span class="ref-state">${r.matches.length?'候选 '+r.matches.length:'待核对'}</span></button>`).join('') || '<p class="muted">尚未识别出带编号的部件。</p>'}</div>`);
 }
-function renderDescription() {
-  const missing=requireDocument(); if(missing)return missing;
-  const text=analysis().description;
-  const paragraphs=String(text || '').split(/\n\s*\n|(?=\[\d{4}\])/).filter(s=>s.trim()).map(block=>{
-    const joined=block.replace(/([A-Za-z])-\n\s*([a-z])/g,'$1$2').replace(/\n/g,' ').replace(/([\u3400-\u9fff]) +(?=[\u3400-\u9fff])/g,'$1');
-    return `<p style="white-space:normal;line-height:1.95;margin:0 0 1em;overflow-wrap:break-word">${claimHTML(joined)}</p>`;
-  }).join('');
-  return card('说明书',text?`<div class="description" style="white-space:normal">${paragraphs}</div>`:empty('未识别出说明书','可在原 PDF 中核对，并通过校对入口补充。'));
+function descriptionBlocks(value, online = false) {
+  // Only split numbered markers at a line or sentence boundary. References
+  // such as "see paragraph [0003]" remain part of the current paragraph.
+  const normalized = String(value || '').replace(/\r\n?/g, '\n').replace(
+    /(^|[\n。.!?！？；;]\s*)[［\[]\s*([0-9０-９]{4,6})\s*[］\]]/g,
+    (_, prefix, number) => prefix + '\n\n[' + number.replace(/[０-９]/g, digit => String.fromCharCode(digit.charCodeAt(0) - 0xfee0)) + '] '
+  );
+  // Legacy online caches retain single newlines from HTML paragraph tags.
+  // PDF physical line wraps must stay within their current paragraph.
+  const pieces = normalized.split(online ? /\n+/ : /\n\s*\n/).filter(text => text.trim());
+  const blocks = [];
+  let nextNumber = 0;
+  let pendingMarker = '';
+  for (let piece of pieces) {
+    piece = piece.trim();
+    if (/^\[\d{4,6}\]$/.test(piece)) {
+      pendingMarker = piece;
+      continue;
+    }
+    if (pendingMarker) {
+      piece = pendingMarker + ' ' + piece;
+      pendingMarker = '';
+    }
+    const marker = piece.match(/^\[(\d{4,6})\]\s*/);
+    const body = piece.slice(marker ? marker[0].length : 0)
+      .replace(/([A-Za-z])-\n\s*([a-z])/g, '$1$2')
+      .replace(/\n/g, ' ').replace(/([\u3400-\u9fff]) +(?=[\u3400-\u9fff])/g, '$1').trim();
+    if (!body) continue;
+    const heading = !marker && body.length < 100 && (
+      /^(技术领域|背景技术|发明内容|实用新型内容|附图说明|具体实施方式)$/.test(body) ||
+      /^[A-Z][A-Z /(),:'’–-]+$/.test(body)
+    );
+    if (heading) {
+      blocks.push({heading: true, body});
+      continue;
+    }
+    nextNumber = marker ? Math.max(nextNumber, Number(marker[1])) : nextNumber + 1;
+    blocks.push({number: marker ? marker[1] : String(nextNumber).padStart(4, '0'), original: !!marker, body});
+  }
+  return blocks;
 }
+function renderDescription() {
+  const missing = requireDocument();
+  if (missing) return missing;
+  const blocks = descriptionBlocks(analysis().description, state.textSource === 'online');
+  if (!blocks.length) return card('说明书', empty('未识别出说明书', '可在原 PDF 中核对，并通过校对入口补充。'));
+  const generated = blocks.some(block => !block.heading && !block.original);
+  const note = generated ? '<p class="muted">未带原文段号的段落使用自动生成的阅读编号，仅供本机定位。</p>' : '';
+  const paragraphs = blocks.map(block => block.heading
+    ? `<h3 class="description-heading">${esc(block.body)}</h3>`
+    : `<p class="description-paragraph" data-original="${block.original}"><span class="paragraph-number" title="${block.original ? '原文段号' : '自动生成的阅读编号'}">[${esc(block.number)}]</span><span class="paragraph-body">${claimHTML(block.body)}</span></p>`
+  ).join('');
+  return card('说明书', note + `<div class="description">${paragraphs}</div>`);
+}
+
 function renderDrawings(side) {
   const missing=requireDocument(); if(missing)return missing;
   const a=analysis(), pages=a.pages || [], figures=pages.filter(p=>p.section==='drawings');

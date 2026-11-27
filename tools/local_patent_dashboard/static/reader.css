@@ -10,3 +10,10 @@
 #onlineStatus.error { color:#b34836; }
 .claim.dependent .claim-body { color:#718096; }
 @media(max-width:900px) { .online-toolbar { padding:10px 14px; } }
+
+.description { white-space:normal; }
+.description-paragraph { display:grid; grid-template-columns:4.6em minmax(0,1fr); gap:.6em; margin:0 0 1.2em; white-space:normal; line-height:1.95; }
+.paragraph-number { color:var(--muted); font-variant-numeric:tabular-nums; }
+.paragraph-body { overflow-wrap:anywhere; min-width:0; }
+.description-heading { margin:1.3em 0 .9em; line-height:1.8; }
+@media(max-width:600px) { .description-paragraph { grid-template-columns:4.2em minmax(0,1fr); gap:.35em; } }

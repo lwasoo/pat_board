@@ -42,6 +42,13 @@ class PpubsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ppubs.publication_number('https://example.com/arbitrary')
 
+    def test_description_keeps_html_paragraphs_and_source_numbers(self):
+        raw = {**RAW, 'descriptionHtml': '<h3>BACKGROUND</h3><p num="0003">[0003]First line\ncontinued <b>in bold</b>.</p><p num="0004">Second paragraph.</p><script>bad()</script>'}
+        text = ppubs.convert_document(raw, NUMBER)['description']
+        self.assertEqual(text, 'BACKGROUND\n\n[0003]First line continued in bold.\n\n[0004] Second paragraph.')
+        self.assertEqual(ppubs.description_text('First paragraph.<br/>Second paragraph.'), 'First paragraph.\n\nSecond paragraph.')
+        self.assertEqual(ppubs.html_text('<b>1</b>. A system.<br><b>2</b>. The system of claim 1.'), '1. A system.\n2. The system of claim 1.')
+
     def test_public_session_request_flow_without_api_key(self):
         observed = []
         hits = [{'guid': RAW['guid'], 'type': 'US-PGPUB'}]

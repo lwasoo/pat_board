@@ -51,8 +51,9 @@ def publication_number(value, allow_partial=False):
 
 
 class TextHTML(HTMLParser):
-    def __init__(self):
+    def __init__(self, paragraphs=False):
         super().__init__(convert_charrefs=True)
+        self.paragraphs = paragraphs
         self.parts = []
         self.skip = 0
 
@@ -60,17 +61,21 @@ class TextHTML(HTMLParser):
         if tag in {'script', 'style'}:
             self.skip += 1
         elif not self.skip and tag in {'br', 'p', 'div', 'claim', 'li', 'tr', 'h1', 'h2', 'h3'}:
-            self.parts.append('\n')
+            self.parts.append('\n\n' if self.paragraphs else '\n')
+            if self.paragraphs:
+                number = dict(attrs).get('num') or dict(attrs).get('data-num')
+                if number and re.fullmatch(r'\d{1,6}', number):
+                    self.parts.append('[' + number.zfill(4) + '] ')
 
     def handle_endtag(self, tag):
         if tag in {'script', 'style'}:
             self.skip = max(0, self.skip - 1)
         elif not self.skip and tag in {'p', 'div', 'claim', 'li', 'tr', 'h1', 'h2', 'h3'}:
-            self.parts.append('\n')
+            self.parts.append('\n\n' if self.paragraphs else '\n')
 
     def handle_data(self, text):
         if not self.skip:
-            self.parts.append(text)
+            self.parts.append(re.sub(r'\s+', ' ', text) if self.paragraphs else text)
 
 
 def html_text(value):
@@ -78,6 +83,19 @@ def html_text(value):
     parser.feed(str(value or ''))
     # Source HTML whitespace is not a semantic paragraph break.
     return '\n'.join(re.sub(r'\s+', ' ', line).strip() for line in ''.join(parser.parts).splitlines() if line.strip())
+
+
+def description_text(value):
+    parser = TextHTML(paragraphs=True)
+    parser.feed(str(value or ''))
+    blocks = []
+    for block in re.split(r"\n\s*\n", ''.join(parser.parts)):
+        block = re.sub(r"[ \t]+", " ", block).strip()
+        # Some publishers supply both a num attribute and a visible marker.
+        block = re.sub(r"^\[(\d{4,6})\]\s*\[\1\]", r"[\1]", block)
+        if block:
+            blocks.append(block)
+    return '\n\n'.join(blocks)
 
 
 def _joined(value):
@@ -94,7 +112,7 @@ def convert_document(raw, requested):
     if actual != requested:
         raise ValueError('PPUBS 返回了其他公开号或文献版本，未保存该结果。')
     claims = parse_claims(html_text(raw.get('claimsHtml')))
-    description = html_text(raw.get('descriptionHtml'))
+    description = description_text(raw.get('descriptionHtml'))
     abstract = normalize_abstract(html_text(raw.get('abstractHtml')))
     if not claims or not description:
         raise ValueError('PPUBS 未返回完整权利要求和说明书，已保留原有阅读内容。')
