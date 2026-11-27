@@ -6,6 +6,7 @@ import re
 import threading
 import uuid
 
+from dashboard_patent_text import repair_canceled_claims
 from dashboard_database import connect, SELECT_SQL
 import dashboard_documents as documents
 from dashboard_ppubs import PpubsClient, PublicationChoices, publication_number
@@ -83,6 +84,8 @@ def fulltext_status(item_id, library):
     key = cache_key(item_id, library)
     with _LOCK:
         cached = _read_cache(key)
+        if cached.get('data') and repair_canceled_claims(cached['data']):
+            _save_cache(key, cached)
         if cached['status'] == 'fetching' and key not in _JOBS:
             cached.update(status='failed', error='上次全文获取被中断，可以重新获取。')
             _save_cache(key, cached)

@@ -65,10 +65,16 @@ function claimHTML(text) {
 
 function renderClaims(side) {
   const missing=requireDocument(); if(missing)return missing;
-  const claims=analysis().claims || [], filter=state.filters[side];
+  const claims=analysis().claims || [];
   const independent=claims.filter(c=>c.kind==='independent').length;
-  const controls=`<div class="claims-filter">${[['all','全部 '+claims.length],['independent','独权 '+independent],['dependent','从权 '+(claims.length-independent)]].map(([k,v])=>`<button data-filter="${k}" class="${filter===k?'active':''}">${v}</button>`).join('')}</div>`;
-  const list=claims.filter(c=>filter==='all' || c.kind===filter).map(c=>`<article class="claim ${c.kind}"><div class="claim-head"><strong>权利要求 ${c.number}</strong><span class="pill">${c.kind==='independent'?'独立权利要求':'从属权利要求'}</span>${c.dependencies?.length?`<span class="muted">引用 ${c.dependencies.join('、')}</span>`:''}</div><div class="claim-body">${claimHTML(c.text)}</div></article>`).join('');
+  const dependent=claims.filter(c=>c.kind==='dependent').length;
+  const canceled=claims.filter(c=>c.kind==='canceled').length;
+  const filters=[['all','全部 '+claims.length],['independent','独权 '+independent],['dependent','从权 '+dependent]];
+  if(canceled)filters.push(['canceled','已取消 '+canceled]);
+  if(!canceled && state.filters[side]==='canceled')state.filters[side]='all';
+  const filter=state.filters[side];
+  const controls=`<div class="claims-filter">${filters.map(([k,v])=>`<button data-filter="${k}" class="${filter===k?'active':''}">${v}</button>`).join('')}</div>`;
+  const list=claims.filter(c=>filter==='all' || c.kind===filter).map(c=>`<article class="claim ${c.kind}"><div class="claim-head"><strong>权利要求 ${c.number}</strong><span class="pill">${c.kind==='canceled'?'已取消':c.kind==='independent'?'独立权利要求':'从属权利要求'}</span>${c.dependencies?.length?`<span class="muted">引用 ${c.dependencies.join('、')}</span>`:''}</div><div class="claim-body">${claimHTML(c.text)}</div></article>`).join('');
   const refs=analysis().references || [];
   return controls+(list || empty('未识别出权利要求','请对照原 PDF，使用顶部校对入口补充。'))+
     card('部件与附图编号',`<p class="muted">点击部件编号在另一栏查看候选位置。OCR 和编号匹配需对照原图核对。</p><div class="refs-list">${refs.map(r=>`<button data-reference="${esc(r.number)}">${esc(r.name)} <b>${esc(r.number)}</b><span class="ref-state">${r.matches.length?'候选 '+r.matches.length:'待核对'}</span></button>`).join('') || '<p class="muted">尚未识别出带编号的部件。</p>'}</div>`);

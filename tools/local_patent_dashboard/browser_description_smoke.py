@@ -22,6 +22,9 @@ def main():
         item = reader.create_item({'publicationNumber': NUMBER})
         data = convert_document(RAW, NUMBER)
         data['description'] = EXAMPLE
+        data['claims'] = [{'number': 11, 'kind': 'dependent', 'dependencies': [10],
+                           'text': 'The transformer of claim 10. 12-13. (canceled) 14. A converter. '
+                                   '15. The converter of claim 14.'}]
         # Deliberately use the old cache shape, with no new parser metadata.
         reader._save_cache(f'library:{item["id"]}', {'status': 'ready', 'data': data})
         reader._save_cache(f'pdf:library:{item["id"]}', {'status': 'failed', 'publicationNumber': NUMBER, 'error': '离线'})
@@ -29,6 +32,15 @@ def main():
             browser = playwright.chromium.launch(headless=True, executable_path=shutil.which('chromium'))
             page = browser.new_page(viewport={'width': 1500, 'height': 1050})
             page.goto(harness.base + f'/reader.html?id={item["id"]}&library=1')
+            claims = page.locator('#leftPane .claim')
+            expect(claims).to_have_count(5)
+            expect(claims.nth(3)).to_contain_text('独立权利要求')
+            page.locator('#leftPane [data-filter="canceled"]').click()
+            expect(claims).to_have_count(2)
+            page.locator('#leftPane [data-filter="dependent"]').click()
+            expect(claims).to_have_count(2)
+            expect(claims.last).to_contain_text('引用 14')
+            page.locator('#leftPane [data-filter="all"]').click()
             paragraphs = page.locator('#rightPane .description-paragraph')
             expect(paragraphs).to_have_count(6)
             assert page.locator('#rightPane .paragraph-number').all_text_contents() == [f'[{i:04}]' for i in range(3, 9)]

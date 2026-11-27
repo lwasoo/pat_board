@@ -31,6 +31,33 @@ class PatentTextTests(unittest.TestCase):
         self.assertEqual(claims[1]['dependencies'],[1])
         self.assertEqual(claims[2]['dependencies'],[1,2])
 
+    def test_claim_numbers_after_canceled_ranges(self):
+        entries = [
+            '11. The transformer of claim 10 wherein the magnetic flux is cancelled in the center leg.',
+            '12-13. (canceled)',
+            '14. A multiphase interleaved power converter comprising a transformer.',
+            '15. The converter of claim 14 wherein the first set of coils are primary windings.',
+            '16. The converter of claim 15 wherein the first phase is phase shifted.',
+            '17. The converter of claim 14 wherein the converter is a two-phase converter.',
+            '18. The converter of claim 14 wherein the first set includes a first coil.',
+            '19. The converter of claim 18 wherein the plurality of legs include an auxiliary leg.',
+            '20. The converter of claim 14 wherein the structure includes a center leg.',
+            '21. The converter of claim 20 wherein magnetic flux is cancelled in the center leg.',
+            '22–23. (Cancelled)', '24. The converter of claim 14 wherein the legs include a first portion.']
+        for separator in [' ', '\n']:
+            claims = parse_claims(separator.join(entries))
+            self.assertEqual([c['number'] for c in claims], list(range(11, 25)))
+            self.assertEqual([c['number'] for c in claims if c['kind'] == 'canceled'], [12, 13, 22, 23])
+            self.assertEqual([c['number'] for c in claims if c['kind'] == 'independent'], [14])
+            self.assertEqual([c['dependencies'] for c in claims if c['kind'] == 'dependent'],
+                             [[10], [14], [15], [14], [14], [18], [14], [20], [14]])
+            self.assertEqual(claims[0]['text'], entries[0][4:])
+
+    def test_canceled_claims_at_start_and_end_and_inline_figure_citation(self):
+        claims = parse_claims('1.-2. (canceled) 3. A converter as shown in FIG. 4. The voltage is 4.5 V. 4. (canceled)')
+        self.assertEqual([c['kind'] for c in claims], ['canceled', 'canceled', 'independent', 'canceled'])
+        self.assertIn('FIG. 4. The voltage is 4.5 V.', claims[2]['text'])
+
     def test_two_columns_are_not_interleaved(self):
         words=[]
         for row in range(20):

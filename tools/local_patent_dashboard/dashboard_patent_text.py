@@ -188,16 +188,37 @@ def split_sections(text, previous, raw=None, page_number=1):
     return segments, segments[-1]["section"]
 
 
+# Publication text may declare several canceled numbers in one heading.
+_CANCEL_WORD = r"cancell?ed"
+_CANCEL_STATUS = re.compile(rf"(?:\(\s*{_CANCEL_WORD}\s*\)|{_CANCEL_WORD})\.?", re.I)
+_CANCEL_HEADING = re.compile(
+    rf"(?<![\w.\-])(?P<first>\d{{1,3}})(?:\s*\.?\s*[-‐‑–—−]\s*(?P<last>\d{{1,3}}))?"
+    rf"\s*[.．、]?\s*(?P<status>{_CANCEL_STATUS.pattern})(?=\s*(?:$|\d{{1,3}}\b))", re.I | re.M)
+_CLAIM_HEADING = re.compile(
+    r"(?:^[ \t]*|(?<!\bFIG\.)(?<!\bNO\.)(?<=[.。])[ \t]+)"
+    r"(?P<number>\d{1,3})\s*[.．、]\s*(?=[^\d\s])", re.M | re.I)
+_CLAIM_START = re.compile(rf"^{_CANCEL_HEADING.pattern}|{_CLAIM_HEADING.pattern}", re.M | re.I)
+
+
 def parse_claims(text):
-    text = clean_text(text)
-    candidates = list(re.finditer(r"(?m)^\s*(\d{1,3})\s*[.．、]\s*(?=[^\d\s])", text))
+    # The entire status declaration is one heading, even in flattened HTML.
+    text = _CANCEL_HEADING.sub(r"\n\g<0>\n", clean_text(text))
     starts = []
-    for candidate in candidates:
-        if not starts or int(candidate[1]) == int(starts[-1][1])+1:
-            starts.append(candidate)
+    expected = None
+    for match in _CLAIM_START.finditer(text):
+        status = match["status"]
+        first = int(match["first"] or match["number"])
+        last = int(match["last"] or first)
+        if (expected is None or first == expected) and first <= last:
+            starts.append((match, first, last, status))
+            expected = last + 1
     claims = []
-    for index, match in enumerate(starts):
-        body = text[match.end():starts[index+1].start() if index+1 < len(starts) else len(text)].strip()
+    for index, (match, number, last, status) in enumerate(starts):
+        if status:
+            claims.extend({"number": n, "text": status, "kind": "canceled", "dependencies": []}
+                          for n in range(number, last + 1))
+            continue
+        body = text[match.end():starts[index+1][0].start() if index+1 < len(starts) else len(text)].strip()
         body = re.sub(r"(?<=[A-Za-z])-\s*\n\s*(?=[a-z])", "-", body)
         body = re.sub(r"\s*\n\s*", " ", body)
         body = re.sub(r"(?<=[\u3400-\u9fff]) +(?=[\u3400-\u9fff])", "", body)
@@ -211,10 +232,31 @@ def parse_claims(text):
                 dependencies.extend(range(int(first), min(int(last), int(first)+100)+1))
             dependencies.extend(int(n) for n in re.findall(r"\d+", numbers))
         dependent = bool(reference) or bool(re.search(r"(?:根据|按照|如|引用).*?权利要求|\b(?:preceding|previous)\s+claims?\b", lead, re.I))
-        number = int(match[1])
         claims.append({"number":number, "text":body, "kind":"dependent" if dependent else "independent",
                        "dependencies":sorted({n for n in dependencies if 0<n<number})})
     return claims
+
+
+def repair_canceled_claims(result):
+    """Recover affected cached entries locally, retaining other claims and their edits."""
+    claims = result.get("claims", [])
+    fixed = []
+    changed = False
+    for i, claim in enumerate(claims):
+        body = claim["text"]
+        if "cancel" not in body.lower() or claim.get("kind") == "canceled":
+            fixed.append(claim)
+            continue
+        if _CANCEL_STATUS.match(body) or _CANCEL_HEADING.search(body):
+            repaired = parse_claims(f"{claim['number']}. {body}")
+            if repaired and (i + 1 == len(claims) or repaired[-1]["number"] < claims[i+1]["number"]):
+                fixed.extend(repaired)
+                changed |= repaired != [claim]
+                continue
+        fixed.append(claim)
+    if changed:
+        result["claims"] = fixed
+    return changed
 
 
 def normalize_classification(text):

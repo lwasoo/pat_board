@@ -24,7 +24,7 @@ from dashboard_database import connect
 from dashboard_patent_text import (
     PARSER_VERSION, is_drawing_sheet, classify_page, jurisdiction, reading_order, ocr_reading_order,
     split_sections, parse_claims, extract_metadata, part_references, check_declared_counts,
-    normalize_classification,
+    normalize_classification, repair_canceled_claims,
 )
 
 MAX_PDF_SIZE = 50 * 1024 * 1024
@@ -208,6 +208,8 @@ def document_status(patent_id, library=False, include_capabilities=True):
             return {"document": None, "capabilities": capabilities()} if include_capabilities else {"document": None}
         path = managed_path(row["object_path"])
         analysis = read_analysis(path)
+        if analysis.get("status") == "ready" and repair_canceled_claims(analysis):
+            save_analysis(path, analysis)
         normalize_completed_status(analysis)
         analysis["needsReanalysis"] = analysis.get("status") == "ready" and analysis.get("parserVersion", 1) < PARSER_VERSION
         if analysis.get("status") in {"queued", "processing"} and str(path) not in _ACTIVE:

@@ -259,6 +259,26 @@ class ReaderTests(unittest.TestCase):
         self.request(f'/api/reader/items?id={item_id}', 'DELETE')
         self.assertEqual(self.request('/api/reader/items')['items'], [])
 
+    def test_canceled_ranges_from_ppubs_html_and_cached_pdf(self):
+        body = 'The transformer of claim 10.'
+        raw = {**RAW, 'claimsHtml': '<p>11. ' + body + '</p><p>12-13. (canceled)</p>'
+                                    '<p>14. A converter.</p><p>15. The converter of claim 14.</p>'}
+        expected = ppubs.convert_document(raw, NUMBER)['claims']
+        self.assertEqual([c['kind'] for c in expected], ['dependent', 'canceled', 'canceled', 'independent', 'dependent'])
+        item_id = reader.create_item({'publicationNumber': NUMBER})['id']
+        with patch.object(documents, 'ocr_command', return_value=[]):
+            documents.upload_document(item_id, sample_pdf(), 'original.pdf', True)
+            documents._WORKER.submit(lambda: None).result(timeout=5)
+        path = documents.managed_path(documents.document_record(item_id, True)['object_path'])
+        cached = documents.read_analysis(path)
+        cached['claims'] = [{**expected[0], 'text': body + ' 12-13. (canceled) 14. A converter. 15. The converter of claim 14.'}]
+        cached['description'] = '已经人工校对的说明书'
+        documents.save_analysis(path, cached)
+        updated = self.request(f'/api/reader/document?id={item_id}')['document']['analysis']
+        self.assertEqual(updated['claims'], expected)
+        self.assertEqual(documents.read_analysis(path)['claims'], expected)
+        self.assertEqual(updated['description'], cached['description'])
+
     def test_cached_text_survives_upstream_failure_and_restart(self):
         item_id = self.request('/api/reader/items', 'POST', {'publicationNumber': NUMBER})['item']['id']
         text = ppubs.convert_document(RAW, NUMBER)
