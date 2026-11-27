@@ -126,12 +126,14 @@ def capabilities():
             "languages": languages, "maxBytes": MAX_PDF_SIZE, "maxPages": MAX_PAGES}
 
 
-def document_record(patent_id):
+def document_record(patent_id, library=False):
     with closing(connect()) as conn:
-        patent = conn.execute("SELECT id FROM patents WHERE id=?", (patent_id,)).fetchone()
+        table = "reading_items" if library else "patents"
+        patent = conn.execute(f"SELECT id FROM {table} WHERE id=?", (patent_id,)).fetchone()
         if not patent:
             raise FileNotFoundError("专利不存在。")
-        row = conn.execute("SELECT * FROM patent_documents WHERE patent_id=?", (patent_id,)).fetchone()
+        table = "reading_documents" if library else "patent_documents"
+        row = conn.execute(f"SELECT * FROM {table} WHERE patent_id=?", (patent_id,)).fetchone()
         return dict(row) if row else None
 
 
@@ -199,9 +201,9 @@ def normalize_completed_status(result):
         result["message"] = "已提取可用文字；未找到 Tesseract，扫描页或图号 OCR 未完成。"
 
 
-def document_status(patent_id):
+def document_status(patent_id, library=False):
     with _LOCK:
-        row = document_record(patent_id)
+        row = document_record(patent_id, library)
         if not row:
             return {"document": None, "capabilities": capabilities()}
         path = managed_path(row["object_path"])
@@ -215,7 +217,7 @@ def document_status(patent_id):
                              "analysis": analysis}}
 
 
-def upload_document(patent_id, data, file_name):
+def upload_document(patent_id, data, file_name, library=False):
     if not data or len(data) > MAX_PDF_SIZE or not data.startswith(b"%PDF-"):
         raise ValueError("请上传不超过 50 MB 的有效 PDF 文件。")
     engine = pdf_engine()
@@ -226,7 +228,7 @@ def upload_document(patent_id, data, file_name):
     except (RuntimeError, engine.FileDataError) as exc:
         raise ValueError("PDF 文件损坏或无法读取。") from exc
     with _LOCK:
-        previous = document_record(patent_id)
+        previous = document_record(patent_id, library)
         if len(_ACTIVE) >= 4:
             raise ValueError("已有多个文件等待识别，请稍后再上传。")
         directory = settings.DATA_DIR / "documents" / uuid.uuid4().hex
@@ -237,7 +239,8 @@ def upload_document(patent_id, data, file_name):
         try:
             save_analysis(path, {"status": "queued", "message": "等待识别", "progress": 0})
             with closing(connect()) as conn, conn:
-                conn.execute("""INSERT INTO patent_documents(patent_id,object_path,file_name,content_type,size)
+                table = "reading_documents" if library else "patent_documents"
+                conn.execute(f"""INSERT INTO {table}(patent_id,object_path,file_name,content_type,size)
                     VALUES(?,?,?,'application/pdf',?) ON CONFLICT(patent_id) DO UPDATE SET
                     object_path=excluded.object_path,file_name=excluded.file_name,size=excluded.size,
                     content_type=excluded.content_type,uploaded_at=CURRENT_TIMESTAMP""",
@@ -251,7 +254,7 @@ def upload_document(patent_id, data, file_name):
             old = managed_path(previous["object_path"])
             if str(old) not in _ACTIVE:
                 remove_managed_document(previous["object_path"])
-        return document_status(patent_id)
+        return document_status(patent_id, library)
 
 
 def queue_extraction(path):
@@ -264,9 +267,9 @@ def queue_extraction(path):
     _WORKER.submit(extract_document, path)
 
 
-def retry_document(patent_id):
+def retry_document(patent_id, library=False):
     with _LOCK:
-        row = document_record(patent_id)
+        row = document_record(patent_id, library)
         if not row:
             raise FileNotFoundError("尚未上传 PDF。")
         path = managed_path(row["object_path"])
@@ -277,14 +280,15 @@ def retry_document(patent_id):
                 raise ValueError("识别队列已满，请稍后再试。")
             save_analysis(path, {"status": "queued", "progress": 0, "message": "等待重新识别"})
             queue_extraction(path)
-        return document_status(patent_id)
+        return document_status(patent_id, library)
 
 
-def delete_document(patent_id):
+def delete_document(patent_id, library=False):
     with _LOCK:
-        row = document_record(patent_id)
+        row = document_record(patent_id, library)
         with closing(connect()) as conn, conn:
-            conn.execute("DELETE FROM patent_documents WHERE patent_id=?", (patent_id,))
+            table = "reading_documents" if library else "patent_documents"
+            conn.execute(f"DELETE FROM {table} WHERE patent_id=?", (patent_id,))
         if row:
             path = managed_path(row["object_path"])
             if str(path) not in _ACTIVE:
@@ -520,14 +524,15 @@ def extract_document(path):
             finally:
                 _ACTIVE.discard(str(path))
             with closing(connect()) as conn:
-                exists = conn.execute("SELECT 1 FROM patent_documents WHERE object_path=?",
-                    (path.relative_to(settings.DATA_DIR).as_posix(),)).fetchone()
+                relative = path.relative_to(settings.DATA_DIR).as_posix()
+                exists = conn.execute("SELECT 1 FROM patent_documents WHERE object_path=? UNION ALL SELECT 1 FROM reading_documents WHERE object_path=?",
+                    (relative, relative)).fetchone()
             if not exists:
                 remove_managed_document(path.relative_to(settings.DATA_DIR).as_posix())
 
 
-def document_file(patent_id, page=None, version=None):
-    row = document_record(patent_id)
+def document_file(patent_id, page=None, version=None, library=False):
+    row = document_record(patent_id, library)
     if not row:
         raise FileNotFoundError("尚未上传 PDF。")
     path = managed_path(row["object_path"])
@@ -543,9 +548,9 @@ def document_file(patent_id, page=None, version=None):
         return image.tobytes("png"), "image/png", f"page-{page}.png"
 
 
-def correct_analysis(patent_id, payload):
+def correct_analysis(patent_id, payload, library=False):
     with _LOCK:
-        row = document_record(patent_id)
+        row = document_record(patent_id, library)
         if not row:
             raise FileNotFoundError("尚未上传 PDF。")
         path = managed_path(row["object_path"])
@@ -566,7 +571,7 @@ def correct_analysis(patent_id, payload):
             data = payload["metadata"]
             if not isinstance(data, dict):
                 raise ValueError("基本信息格式不正确。")
-            result["metadata"] = {key: str(data.get(key, ""))[:500] for key in extract_metadata("")}
+            result["metadata"] = {key: str(data.get(key, ""))[:4000 if key == "abstract" else 500] for key in extract_metadata("")}
         if "clearAnnotations" in payload:
             page = next((p for p in result["pages"] if p["number"] == int(payload["clearAnnotations"])), None)
             if page is None:
@@ -584,4 +589,4 @@ def correct_analysis(patent_id, payload):
         result["references"] = link_references(extract_references(result["claims"], result.get("description", "")), result["pages"])
         result["reviewed"] = True
         save_analysis(path, result)
-        return document_status(patent_id)
+        return document_status(patent_id, library)

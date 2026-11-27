@@ -1,0 +1,5 @@
+PPUBS browser-session protocol and search template adapted from patent-client-agents.
+https://github.com/parkerhancock/patent-client-agents
+Upstream revision b06f807. Apache License 2.0.
+Modified implementation uses Python standard-library HTTP and a local text/cache model.
+See PATENT-CLIENT-AGENTS-LICENSE.txt.

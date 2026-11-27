@@ -50,6 +50,24 @@ CREATE TABLE IF NOT EXISTS patent_documents (
   uploaded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (patent_id) REFERENCES patents(id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS reading_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  publication_number TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS reading_documents (
+  patent_id INTEGER PRIMARY KEY REFERENCES reading_items(id) ON DELETE CASCADE,
+  object_path TEXT NOT NULL,
+  file_name TEXT NOT NULL,
+  content_type TEXT NOT NULL DEFAULT 'application/pdf',
+  size INTEGER NOT NULL DEFAULT 0,
+  uploaded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS reader_fulltexts (
+  item_key TEXT PRIMARY KEY,
+  payload TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS annual_targets (
   year INTEGER PRIMARY KEY,
   application_target INTEGER NOT NULL DEFAULT 0,

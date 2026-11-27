@@ -1,0 +1,17 @@
+.library-body { display: block; height: auto; min-height: 100vh; }
+.library-main { max-width: 1240px; margin: 0 auto; padding: 42px 28px; }
+.library-heading { display: flex; justify-content: space-between; align-items: center; gap: 24px; margin-bottom: 30px; }
+.library-heading h1 { font-size: 28px; }
+.library-search { max-width: 600px; color: var(--muted); font-size: 12px; }
+.library-search input { width: 100%; margin-top: 8px; }
+.library-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin-top: 22px; }
+.library-card { background: white; border: 1px solid var(--line); border-radius: 10px; padding: 22px; display: flex; flex-direction: column; gap: 12px; }
+.library-card h2 { font-size: 17px; line-height: 1.65; margin: 0; overflow-wrap: anywhere; }
+.library-card h2 a { color: var(--ink); text-decoration: none; }
+.library-card h2 a:hover { color: var(--blue); }
+.library-card p { margin: 0; overflow-wrap: anywhere; }
+.library-card footer { margin-top: auto; justify-content: flex-start; padding-top: 12px; }
+.library-empty { grid-column: 1 / -1; }
+#libraryStatus { color: var(--muted); line-height: 1.7; }
+@media (max-width: 900px) { .library-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .library-heading { align-items: flex-start; flex-direction: column; } }
+@media (max-width: 600px) { .library-main { padding: 22px 15px; } .library-grid { grid-template-columns: 1fr; } }

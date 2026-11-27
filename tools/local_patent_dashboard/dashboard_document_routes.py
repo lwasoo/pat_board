@@ -8,7 +8,8 @@ import dashboard_documents as documents
 class DocumentRoutes:
     def handle_document_route(self, method):
         route = self.route()
-        base = "/api/patents/document"
+        library = route.path.startswith("/api/reader/document")
+        base = "/api/reader/document" if library else "/api/patents/document"
         if route.path != base and not route.path.startswith(base + "/"):
             return False
         try:
@@ -20,10 +21,10 @@ class DocumentRoutes:
             if patent_id <= 0:
                 raise ValueError("请选择专利。")
             if method == "GET" and route.path == base:
-                self.json_response(documents.document_status(patent_id))
+                self.json_response(documents.document_status(patent_id, library))
             elif method == "GET" and route.path in {base + "/file", base + "/page"}:
                 page = int(query.get("page", ["1"])[0]) if route.path.endswith("/page") else None
-                data, content_type, name = documents.document_file(patent_id, page, query.get("v", [None])[0])
+                data, content_type, name = documents.document_file(patent_id, page, query.get("v", [None])[0], library)
                 self.send_response(200)
                 self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(data)))
@@ -40,13 +41,13 @@ class DocumentRoutes:
                 if len(data) != length:
                     raise ValueError("PDF 上传不完整，请重试。")
                 self.json_response(documents.upload_document(patent_id, data,
-                    query.get("filename", ["专利.pdf"])[0]), 202)
+                    query.get("filename", ["专利.pdf"])[0], library), 202)
             elif method == "POST" and route.path == base + "/retry":
-                self.json_response(documents.retry_document(patent_id), 202)
+                self.json_response(documents.retry_document(patent_id, library), 202)
             elif method == "PATCH" and route.path == base:
-                self.json_response(documents.correct_analysis(patent_id, self.read_json()))
+                self.json_response(documents.correct_analysis(patent_id, self.read_json(), library))
             elif method == "DELETE" and route.path == base:
-                self.json_response(documents.delete_document(patent_id))
+                self.json_response(documents.delete_document(patent_id, library))
             else:
                 self.json_response({"error": "文件接口不存在。"}, 404)
         except FileNotFoundError as exc:

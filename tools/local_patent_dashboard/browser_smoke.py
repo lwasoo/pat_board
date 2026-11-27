@@ -23,7 +23,7 @@ def run_browser_checks(base, pdf_path, screenshots):
      page=context.new_page();errors=[]
      page.on('pageerror',lambda e:errors.append(str(e)))
      page.on('dialog',lambda d:d.accept('1') if d.type=='prompt' else d.accept())
-     page.goto(base+'/');page.locator('[data-view="ledger"]').click()
+     page.goto(base+'/index.html');page.locator('[data-view="ledger"]').click()
      page.locator('#ledgerTable .patent-reader-link').first.click()
      expect(page.locator('#patentTitle')).to_have_text('一种测试装置')
      expect(page.locator('#documentStatus')).to_contain_text('识别完成',timeout=90000)
@@ -49,14 +49,7 @@ def run_browser_checks(base, pdf_path, screenshots):
      expect(popup.locator('#rightPane .number-box').first).to_be_visible()
      page.locator('#leftPane [data-filter="dependent"]').click()
      expect(page.locator('#leftPane .claim')).to_have_count(1)
-     page.locator('#leftPane [data-tab="fees"]').click();page.locator('#leftPane [data-add-fee]').click()
-     page.locator('#feeType').fill('第3年年费');page.locator('#feeDue').fill('2027-01-01');page.locator('#feeAmount').fill('1500')
-     page.locator('#feeForm button.primary').click()
-     expect(page.locator('#leftPane .fee-item')).to_have_count(1)
-     expect(page.locator('#leftPane .fee-item')).to_contain_text('1500.00')
-     page.locator('#leftPane [data-edit-fee]').click();page.locator('#feeAmount').fill('1600');page.locator('#feeForm button.primary').click()
-     expect(page.locator('#leftPane .fee-item')).to_contain_text('1600.00')
-     page.locator('#leftPane [data-delete-fee]').click();expect(page.locator('#leftPane .fee-item')).to_have_count(0)
+     expect(page.locator('[data-tab="fees"]')).to_have_count(0)
      page.locator('#review').click();page.locator('#claimsText').fill('1. 一种装置，包括壳体（1）。\n2. 根据权利要求1所述的装置。')
      page.locator('#reviewForm button.primary').click();expect(page.locator('#reviewDialog')).not_to_be_visible()
      page.locator('#leftPane [data-tab="claims"]').click();page.locator('#leftPane [data-filter="all"]').click()
@@ -81,7 +74,7 @@ def run_browser_checks(base, pdf_path, screenshots):
      expect(page.locator('#retry')).to_be_visible()
      print('browser errors',errors)
      assert not errors,errors
-     print('PASS: ledger navigation, claims filters, references, popup sync, fee CRUD, correction, PDF replacement and missing-OCR failure state')
+     print('PASS: ledger navigation, claims filters, references, popup sync, independent fee navigation, correction, PDF replacement and missing-OCR failure state')
      browser.close()
 
 

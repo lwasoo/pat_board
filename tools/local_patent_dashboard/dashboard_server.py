@@ -29,10 +29,11 @@ from dashboard_notifications import (
 )
 from dashboard_validation import clean_text, normalized_patent
 from dashboard_document_routes import DocumentRoutes
+from dashboard_reader_routes import ReaderRoutes
 from dashboard_documents import remove_managed_document, capabilities
 
 
-class PatentHandler(DocumentRoutes, BaseHTTPRequestHandler):
+class PatentHandler(ReaderRoutes, DocumentRoutes, BaseHTTPRequestHandler):
     server_version = "LocalPatentDashboard/1.0"
 
     def log_message(self, _format, *_args):
@@ -69,6 +70,8 @@ class PatentHandler(DocumentRoutes, BaseHTTPRequestHandler):
         return urllib.parse.urlsplit(self.path)
 
     def do_GET(self):
+        if self.handle_reader_route("GET"):
+            return
         if self.handle_document_route("GET"):
             return
         route = self.route()
@@ -109,6 +112,8 @@ class PatentHandler(DocumentRoutes, BaseHTTPRequestHandler):
         return self.send_static(route.path)
 
     def do_POST(self):
+        if self.handle_reader_route("POST"):
+            return
         if self.handle_document_route("POST"):
             return
         route = self.route()
@@ -209,6 +214,8 @@ class PatentHandler(DocumentRoutes, BaseHTTPRequestHandler):
             self.json_response({"error": f"操作失败：{exc}"}, 500)
 
     def do_PUT(self):
+        if self.handle_reader_route("PUT"):
+            return
         route = self.route()
         if route.path != "/api/patents":
             return self.json_response({"error": "接口不存在。"}, 404)
@@ -237,6 +244,8 @@ class PatentHandler(DocumentRoutes, BaseHTTPRequestHandler):
             self.json_response({"error": "申请号已存在。"}, 409)
 
     def do_PATCH(self):
+        if self.handle_reader_route("PATCH"):
+            return
         if self.handle_document_route("PATCH"):
             return
         route = self.route()
@@ -263,6 +272,8 @@ class PatentHandler(DocumentRoutes, BaseHTTPRequestHandler):
             self.json_response({"error": str(exc)}, 400)
 
     def do_DELETE(self):
+        if self.handle_reader_route("DELETE"):
+            return
         if self.handle_document_route("DELETE"):
             return
         route = self.route()
@@ -298,7 +309,7 @@ class PatentHandler(DocumentRoutes, BaseHTTPRequestHandler):
             self.json_response({"error": str(exc) or "编号无效。"}, 400)
 
     def send_static(self, request_path):
-        name = "index.html" if request_path in {"", "/"} else request_path.lstrip("/")
+        name = "library.html" if request_path in {"", "/"} else request_path.lstrip("/")
         path = (settings.STATIC_DIR / name).resolve()
         if settings.STATIC_DIR.resolve() not in path.parents and path != settings.STATIC_DIR.resolve():
             return self.json_response({"error": "文件不存在。"}, 404)

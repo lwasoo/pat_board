@@ -12,6 +12,7 @@ a = Analysis(
     binaries=[],
     datas=[
         (str(root / "static"), "static"),
+        (str(root / "third_party"), "third_party"),
     ] + model_datas,
     hiddenimports=[],
     hookspath=[],
