@@ -21,12 +21,24 @@ BASE = 'https://ppubs.uspto.gov'
 MAX_RESPONSE = 16 * 1024 * 1024
 
 
-def publication_number(value):
+class PublicationChoices(ValueError):
+    def __init__(self, candidates):
+        super().__init__('查到多个文献版本，请选择完整公开号。')
+        self.candidates = candidates
+
+
+def publication_number(value, allow_partial=False):
     value = str(value or '').upper().strip()
     if value.startswith(('HTTPS://', 'HTTP://')):
         match = re.search(r'/PATENT/([^/?#]+)', value)
         value = match[1] if match else ''
     value = re.sub(r'[\s,-]', '', value)
+    partial = re.fullmatch(r'(?:US)?(\d{6,11})', value)
+    if allow_partial and partial:
+        digits = partial[1]
+        if not int(digits):
+            raise ValueError('专利号码不能全为零。')
+        return 'US' + (digits if len(digits) == 11 else digits.lstrip('0'))
     match = re.fullmatch(r'US(\d{6,11})(A1|A2|A9|B1|B2|A)', value)
     if not match:
         raise ValueError('请输入完整美国公开号或授权号，例如 US20250337340A1、US10211630B1。')
@@ -112,7 +124,7 @@ class PpubsClient:
         self.deadline = time.monotonic() + 55
         self.case_id = None
 
-    def request(self, path, payload=None, method='GET'):
+    def request(self, path, payload=None, method='GET', binary=False, text=False):
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
             raise ValueError('连接 PPUBS 超时，请稍后重试。')
@@ -120,15 +132,20 @@ class PpubsClient:
         headers = {**self.headers, 'Content-Type': 'application/json'}
         request = urllib.request.Request(BASE + path, data=data, headers=headers, method=method)
         with self.opener.open(request, timeout=min(12, remaining)) as response:
-            body = response.read(MAX_RESPONSE + 1)
-            if len(body) > MAX_RESPONSE:
+            limit = 50 * 1024 * 1024 if binary else MAX_RESPONSE
+            body = response.read(limit + 1)
+            if len(body) > limit:
                 raise ValueError('PPUBS 返回的数据过大，请使用原始文献核对。')
             if response.headers.get('X-Access-Token'):
                 self.headers['X-Access-Token'] = response.headers['X-Access-Token']
+            if binary:
+                return body
+            if text:
+                return body.decode('utf-8').strip()
             if path == '/pubwebapp/':
                 return None
             result = json.loads(body)
-            if not isinstance(result, dict) or result.get('error'):
+            if isinstance(result, dict) and result.get('error'):
                 raise ValueError('PPUBS 未返回有效的专利数据，请稍后重试。')
             return result
 
@@ -139,13 +156,15 @@ class PpubsClient:
         self.case_id = result['userCase']['caseId']
 
     def fetch(self, number):
-        requested = publication_number(number)
+        requested = publication_number(number, allow_partial=True)
+        partial = bool(re.fullmatch(r"US\d+", requested))
         for attempt in range(2):
             try:
                 self.session()
                 digits = re.search(r"\d+", requested)[0]
                 query = f'"{digits}".pn.'
-                sources = ['US-PGPUB'] if requested.endswith(('A1', 'A2', 'A9')) else ['USPAT', 'USOCR']
+                application = len(digits) == 11 if partial else requested.endswith(('A1', 'A2', 'A9'))
+                sources = ['US-PGPUB'] if application else ['USPAT', 'USOCR']
                 search_query = {
                     'caseId': self.case_id, 'hl_snippets': '2', 'op': 'OR', 'q': query,
                     'queryName': query, 'userEnteredQuery': query, 'highlights': '1', 'qt': 'brs',
@@ -161,20 +180,26 @@ class PpubsClient:
                            'tagDocSearch': False, 'query': search_query}
                 self.request('/api/searches/counts', search_query, 'POST')
                 result = self.request('/api/searches/searchWithBeFamily', payload, 'POST')
-                found = None
+                matches = {}
                 for hit in result.get('patents', []):
                     try:
-                        matches = publication_number(hit.get('guid')) == requested
+                        canonical = publication_number(hit.get('guid'))
                     except ValueError:
-                        matches = False
-                    if matches and hit.get('type') in sources:
-                        found = hit
-                        break
-                if not found:
-                    raise ValueError('PPUBS 未找到完全匹配的公开号和文献类型，请核对号码或使用 PDF。')
+                        continue
+                    same = re.search(r"\d+", canonical)[0] == digits if partial else canonical == requested
+                    if same and hit.get('type') in sources:
+                        matches.setdefault(canonical, hit)
+                if not matches:
+                    raise ValueError('PPUBS 未找到匹配的专利号码，请核对号码或使用 PDF。')
+                if len(matches) > 1:
+                    raise PublicationChoices([{'publicationNumber': key, 'title': html_text(hit.get('inventionTitle'))}
+                                              for key, hit in matches.items()])
+                requested, found = next(iter(matches.items()))
                 params = urllib.parse.urlencode({'queryId': 1, 'source': found['type'], 'includeSections': 'true'})
                 path = '/api/patents/highlight/' + urllib.parse.quote(found['guid'], safe='') + '?' + params
-                return convert_document(self.request(path), requested)
+                self.document = self.request(path)
+                self.document.setdefault('type', found['type'])
+                return convert_document(self.document, requested)
             except urllib.error.HTTPError as exc:
                 if exc.code in {401, 403} and attempt == 0:
                     continue
@@ -186,3 +211,50 @@ class PpubsClient:
             except (KeyError, TypeError, json.JSONDecodeError) as exc:
                 raise ValueError('PPUBS 返回格式发生变化，未替换原有内容。') from exc
         raise ValueError('PPUBS 暂时无法建立公开检索会话。')
+
+
+    def download_pdf(self, number):
+        # Resolve the exact version again and use the same public session for
+        # its print job. Text and image retrieval are separate PPUBS operations.
+        self.fetch(publication_number(number))
+        raw = self.document
+        try:
+            count = int(raw.get('pageCount') or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError('PPUBS 未返回有效页数，无法生成 PDF。') from exc
+        location = raw.get('imageLocation')
+        if not isinstance(location, str) or count < 1:
+            raise ValueError('该文献未提供可下载的图像位置，请手动上传 PDF。')
+        if count > 150:
+            raise ValueError('本机阅读最多支持 150 页，请先分割原文 PDF 后上传。')
+        location = location.rstrip('/')
+        self.deadline = time.monotonic() + 180
+        try:
+            job = self.request('/api/print/imageviewer', {
+                'caseId': self.case_id,
+                'pageKeys': [f'{location}/{page:08}.tif' for page in range(1, count + 1)],
+                'patentGuid': raw['guid'], 'saveOrPrint': 'save', 'source': raw['type'],
+            }, 'POST', text=True)
+            if not isinstance(job, str) or not job.strip():
+                raise ValueError('PPUBS 未创建 PDF 下载任务，请稍后重试。')
+            while time.monotonic() < self.deadline:
+                statuses = self.request('/api/print/print-process', [job.strip().strip('"')], 'POST')
+                if not isinstance(statuses, list) or not statuses or not isinstance(statuses[0], dict):
+                    raise ValueError('PPUBS PDF 任务状态格式发生变化。')
+                status = statuses[0]
+                if not isinstance(status.get('printStatus'), str):
+                    raise ValueError('PPUBS 未返回有效的 PDF 任务状态。')
+                if status.get('printStatus') == 'COMPLETED':
+                    name = str(status.get('pdfName') or '')
+                    if not name:
+                        raise ValueError('PPUBS 未返回 PDF 文件名。')
+                    data = self.request('/api/print/save/' + urllib.parse.quote(name, safe=''), binary=True)
+                    if not data.startswith(b'%PDF-'):
+                        raise ValueError('PPUBS 返回的文件不是 PDF，未保存该内容。')
+                    return data
+                if status.get('printStatus') in {'FAILED', 'ERROR', 'CANCELLED'}:
+                    raise ValueError('PPUBS 无法生成该文献的 PDF，请稍后重试或手动上传。')
+                time.sleep(1)
+            raise ValueError('PPUBS PDF 生成超时，请稍后重试。')
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise ValueError('原文 PDF 下载失败，请检查网络后重试；已获取的全文仍可阅读。') from exc

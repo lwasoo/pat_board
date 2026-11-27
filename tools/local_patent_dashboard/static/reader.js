@@ -6,7 +6,7 @@ const library = query.get('library') === '1';
 const scope = library ? 'library' : 'ledger';
 const tabs = {basic:'基本信息',claims:'权利要求',description:'说明书',drawings:'附图',pdf:'原 PDF'};
 const labels = {title:'专利名称',applicationNumber:'申请号',publicationNumber:'公开号/授权号',applicationDate:'申请日',owner:'申请人/权利人',inventors:'发明人',classification:'IPC 分类号',abstract:'摘要'};
-const state = {patent:null,document:null,online:null,textSource:"pdf",onlineTimer:null,tabs:{left:'claims',right:'drawings'},filters:{left:'all',right:'all'},page:{left:1,right:1},selected:null,annotation:false,timer:null};
+const state = {patent:null,document:null,online:null,textSource:"pdf",onlineTimer:null,pdfTimer:null,pdfJob:null,tabs:{left:'claims',right:'drawings'},filters:{left:'all',right:'all'},page:{left:1,right:1},selected:null,annotation:false,timer:null};
 let channel;
 try { channel = new BroadcastChannel('patent-reader-'+scope+'-'+id); } catch (_) { /* independent reading still works */ }
 async function api(path,options={}) {
@@ -143,6 +143,7 @@ if(channel)channel.onmessage=async event=>{
   if(event.data.type==='reference')selectReference(String(event.data.number),'left');
   if(event.data.type==='document')await refreshDocument();
   if(event.data.type==='fulltext')await refreshOnline();
+  if(event.data.type==='pdf-download'){await refreshPdf();await refreshDocument();}
 };
 function statusUI() {
   const d=state.document,a=d?.analysis || {}, busy=d && ['queued','processing'].includes(a.status);
@@ -153,6 +154,7 @@ function statusUI() {
   $('documentStatus').innerHTML=!d?(state.online?.data?'电子全文已保存在本机，可上传 PDF 对照阅读。':'还没有专利文件 · 上传 PDF 后会按基本信息、权利要求、说明书、附图分类。'):`<span>${esc(d.fileName)}</span> · ${esc(a.message || '待识别')}${busy?`<progress value="${Number(a.progress || 0)}" max="100"></progress>`:''}${a.needsReanalysis?' · 识别规则已更新，请点击“重新识别”':''}${a.warnings?.length?` · ${a.warnings.length} 项待核对`:''}`;
   clearTimeout(state.timer);
   if(busy)state.timer=setTimeout(()=>refreshDocument().catch(e=>{toast(e.message);state.timer=setTimeout(()=>refreshDocument().catch(e=>toast(e.message)),5000);}),1500);
+  onlineUI();
 }
 async function refreshDocument() {
   const previous=state.document?.analysis.status;
@@ -211,17 +213,26 @@ function onlineUI() {
   const busy = result.status === 'fetching';
   $('fetchText').disabled = busy;
   $('fetchText').textContent = busy ? '正在获取…' : '获取美国全文';
+  $('fetchPdf').disabled = !result.data || !!state.document || state.pdfJob?.status === 'fetching';
   $('useOnline').disabled = !result.data;
   $('useOnline').classList.toggle('active', state.textSource === 'online');
   $('usePdf').classList.toggle('active', state.textSource === 'pdf');
   $('onlineStatus').classList.toggle('error', result.status === 'failed');
-  $('onlineStatus').textContent = result.status === 'failed' ? result.error : busy ? '正在连接 USPTO Public Search…' : result.data ? `已缓存 ${result.data.source.publicationNumber} · ${new Date(result.data.source.fetchedAt).toLocaleString()} · 可离线阅读` : '尚未获取电子全文';
+  $('versionChoices').hidden = result.status !== 'select_version';
+  $('versionChoices').innerHTML = (result.candidates || []).map(candidate => `<button data-version="${esc(candidate.publicationNumber)}">${esc(candidate.publicationNumber)}${candidate.title ? ' · '+esc(candidate.title) : ''}</button>`).join('');
+  $('versionChoices').querySelectorAll('[data-version]').forEach(button => { button.onclick = () => { $('onlineNumber').value = button.dataset.version; $('fetchText').click(); }; });
+  $('onlineStatus').textContent = result.status === 'select_version' ? '查到多个文献版本，请选择完整公开号。' : result.status === 'failed' ? result.error : busy ? '正在连接 USPTO Public Search…' : result.data ? `已缓存 ${result.data.source.publicationNumber} · ${new Date(result.data.source.fetchedAt).toLocaleString()} · 可离线阅读` : '尚未获取电子全文';
 }
 async function refreshOnline() {
   clearTimeout(state.onlineTimer);
   const previous = state.online?.status;
   state.online = await api('/api/reader/fulltext?id=' + id + '&scope=' + scope);
   if (state.online.data && ((!state.document && !previous) || (previous === 'fetching' && state.online.status === 'ready'))) state.textSource = 'online';
+  if (state.online.status === 'ready' && state.online.data) {
+    const resolved = state.online.data.source.publicationNumber;
+    $('onlineNumber').value = resolved;
+    $('patentNumber').textContent = resolved;
+  }
   if (!state.document && state.online.data) state.tabs.right = 'description';
   onlineUI();statusUI();render();
   if (state.online.status === 'fetching') state.onlineTimer = setTimeout(() => refreshOnline().catch(error => {
@@ -236,6 +247,33 @@ $('fetchText').onclick = async () => {
 };
 $('useOnline').onclick = () => { state.textSource = 'online';onlineUI();statusUI();render(); };
 $('usePdf').onclick = () => { state.textSource = 'pdf';onlineUI();statusUI();render(); };
+async function refreshPdf() {
+  clearTimeout(state.pdfTimer);
+  const previous = state.pdfJob?.status;
+  state.pdfJob = await api('/api/reader/pdf?id=' + id + '&scope=' + scope);
+  const job = state.pdfJob;
+  $('pdfDownloadStatus').hidden = job.status === 'empty';
+  $('pdfDownloadStatus').classList.toggle('error', job.status === 'failed');
+  $('pdfDownloadStatus').textContent = job.status === 'fetching' ? '正在生成并下载原文 PDF，可能需要数分钟…' : job.status === 'failed' ? job.error : job.status === 'ready' ? '原文 PDF 已保存在本机，可查看原 PDF；附图识别完成后会显示在附图面板。' : '';
+  onlineUI();
+  if (job.status === 'ready' && previous !== 'ready') {
+    state.awaitingDrawings = true;
+    await refreshDocument();
+    if (state.document?.analysis?.status === 'ready') {
+      state.tabs.right = 'drawings';state.awaitingDrawings = false;render();
+    }
+    broadcast({type:'document'});
+  }
+  if (job.status === 'fetching') state.pdfTimer = setTimeout(() => refreshPdf().catch(error => {
+    $('pdfDownloadStatus').textContent = error.message;
+  }), 1500);
+}
+$('fetchPdf').onclick = async () => {
+  try {
+    state.pdfJob = await api('/api/reader/pdf?id=' + id + '&scope=' + scope, {method:'POST'});
+    onlineUI();await refreshPdf();broadcast({type:'pdf-download'});
+  } catch (error) { toast(error.message); }
+};
 async function start() {
   try {
     if(!Number.isInteger(id)||id<=0)throw new Error('请从文献库选择一件专利后打开。');
@@ -244,12 +282,12 @@ async function start() {
     if(!state.patent)throw new Error('专利不存在或已删除。');
     $('patentNumber').textContent=state.patent.publicationNumber || state.patent.applicationNumber || '本地文献';$('patentTitle').textContent=state.patent.title;document.title=state.patent.title+' · 专利阅读';
     $('patentTags').innerHTML=[state.patent.countryRegion,state.patent.patentType,state.patent.legalStatus].filter(Boolean).map((v,i)=>`<span class="tag ${i===2?'status':''}">${esc(v || '—')}</span>`).join('');
-    await refreshDocument();await refreshOnline();
+    await refreshDocument();await refreshOnline();await refreshPdf();
     if(query.get('mode')==='single')document.body.classList.add('single');
     if(query.get('side')==='right')document.body.classList.add('popout');
     const initial=query.get('tab');if(initial in tabs)state.tabs[query.get('side')==='right'?'right':'left']=initial;
     $('singleToggle').textContent=document.body.classList.contains('single')?'左右分栏':'单栏阅读';render();
   } catch(e){$('documentStatus').textContent=e.message;$('documentStatus').classList.add('error');$('upload').disabled=true;}
 }
-window.addEventListener('beforeunload',()=>{clearTimeout(state.timer);clearTimeout(state.onlineTimer);channel?.close();});
+window.addEventListener('beforeunload',()=>{clearTimeout(state.timer);clearTimeout(state.onlineTimer);clearTimeout(state.pdfTimer);channel?.close();});
 start();

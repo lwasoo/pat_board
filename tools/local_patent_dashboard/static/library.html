@@ -9,5 +9,5 @@
   <p id="libraryStatus" role="status" aria-live="polite"></p>
   <section id="libraryItems" class="library-grid" aria-label="专利文献列表"></section>
 </main>
-<dialog id="addDialog"><form id="addForm"><div class="dialog-title"><h2>添加专利文献</h2><button type="button" id="closeAdd">×</button></div><label>公开号<input id="newNumber" required placeholder="US20250337340A1"></label><label>标题（可选）<input id="newTitle" maxlength="500"></label><p class="muted">PPUBS 全文获取支持美国公开申请和授权专利，需联网。其他文献可直接上传 PDF。</p><p id="addError" class="error" role="alert"></p><footer><button class="primary" id="createItem">添加并打开</button></footer></form></dialog>
+<dialog id="addDialog"><form id="addForm"><div class="dialog-title"><h2>添加专利文献</h2><button type="button" id="closeAdd">×</button></div><label>公开号<input id="newNumber" required placeholder="US10211630 或 US20250337340A1"></label><label>标题（可选）<input id="newTitle" maxlength="500"></label><p class="muted">可省略 A1/B1 等类型码，有多个匹配版本时会提示选择。获取美国全文需联网。其他文献可直接上传 PDF。</p><p id="addError" class="error" role="alert"></p><footer><button class="primary" id="createItem">添加并打开</button></footer></form></dialog>
 <script src="/library.js"></script></body></html>

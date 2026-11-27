@@ -44,6 +44,8 @@ class PpubsTests(unittest.TestCase):
 
     def test_public_session_request_flow_without_api_key(self):
         observed = []
+        hits = [{'guid': RAW['guid'], 'type': 'US-PGPUB'}]
+        pdf_bytes = sample_pdf()
         class Fake(BaseHTTPRequestHandler):
             def log_message(self, *args):
                 pass
@@ -61,7 +63,13 @@ class PpubsTests(unittest.TestCase):
                 observed.append(self.path)
                 if self.path == '/pubwebapp/':
                     return self.reply({})
-                self.reply(RAW)
+                if self.path.startswith('/api/print/save/'):
+                    self.send_response(200)
+                    self.send_header('Content-Length', str(len(pdf_bytes)))
+                    self.end_headers()
+                    self.wfile.write(pdf_bytes)
+                    return
+                self.reply({**RAW, 'pageCount': 4, 'imageLocation': 'pgpub/2025/test'})
 
             def do_POST(self):
                 data = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
@@ -71,13 +79,27 @@ class PpubsTests(unittest.TestCase):
                 if self.headers.get('X-Access-Token') != 'temporary-test-session':
                     self.send_error(401)
                     return
-                self.reply({'numFound': 1, 'patents': [{'guid': RAW['guid'], 'type': 'US-PGPUB'}]})
+                if self.path == '/api/print/imageviewer':
+                    assert data['pageKeys'] == [f'pgpub/2025/test/{n:08}.tif' for n in range(1, 5)]
+                    assert data['patentGuid'] == RAW['guid']
+                    return self.reply('job-1')
+                if self.path == '/api/print/print-process':
+                    assert data == ['job-1']
+                    return self.reply([{'printStatus': 'COMPLETED', 'pdfName': 'original.pdf'}])
+                self.reply({'numFound': len(hits), 'patents': hits})
         server = ThreadingHTTPServer(('127.0.0.1', 0), Fake)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
             with patch.object(ppubs, 'BASE', f'http://127.0.0.1:{server.server_port}'):
                 result = ppubs.PpubsClient().fetch(NUMBER)
+                partial = ppubs.PpubsClient().fetch('20250337340')
+                self.assertEqual(partial['source']['publicationNumber'], NUMBER)
+                hits.append({'guid': 'US-20250337340-A9', 'type': 'US-PGPUB'})
+                with self.assertRaises(ppubs.PublicationChoices) as choices:
+                    ppubs.PpubsClient().fetch('US20250337340')
+                self.assertEqual(len(choices.exception.candidates), 2)
+                self.assertEqual(ppubs.PpubsClient().download_pdf(NUMBER), pdf_bytes)
             self.assertEqual(result['metadata']['title'], 'Power supply')
             search = next(entry[1] for entry in observed if isinstance(entry, tuple) and entry[0].endswith('/searchWithBeFamily'))
             self.assertEqual(search['query']['caseId'], 123)
@@ -98,6 +120,44 @@ class ReaderTests(unittest.TestCase):
                 return result
             time.sleep(.03)
         self.fail('Full-text worker did not finish')
+
+    def test_partial_number_selection_and_pdf_attachment(self):
+        item_id = self.request('/api/reader/items', 'POST', {'publicationNumber': 'US20250337340'})['item']['id']
+        with patch.object(reader.PpubsClient, 'fetch', side_effect=ppubs.PublicationChoices([
+                {'publicationNumber': NUMBER}, {'publicationNumber': 'US20250337340A9'}])):
+            self.request(f'/api/reader/fulltext?id={item_id}', 'POST', {'publicationNumber': '20250337340'})
+            self.assertEqual(self.wait_text(item_id)['status'], 'select_version')
+        with patch.object(reader.PpubsClient, 'fetch', return_value=ppubs.convert_document(RAW, NUMBER)):
+            self.request(f'/api/reader/fulltext?id={item_id}', 'POST', {'publicationNumber': NUMBER})
+            self.assertEqual(self.wait_text(item_id)['status'], 'ready')
+        self.assertEqual(self.request(f'/api/reader/item?id={item_id}')['item']['publicationNumber'], NUMBER)
+        with patch.object(reader.PpubsClient, 'download_pdf', return_value=sample_pdf()), patch.object(documents, 'ocr_command', return_value=[]):
+            self.request(f'/api/reader/pdf?id={item_id}', 'POST')
+            reader._WORKER.submit(lambda: None).result(timeout=5)
+            self.assertEqual(self.request(f'/api/reader/pdf?id={item_id}')['status'], 'ready')
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                doc = self.request(f'/api/reader/document?id={item_id}')['document']
+                if doc['analysis']['status'] not in {'queued', 'processing'}:
+                    break
+                time.sleep(.03)
+        self.assertTrue(any(p['section'] == 'drawings' for p in doc['analysis']['pages']))
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.request(f'/api/reader/pdf?id={item_id}', 'POST')
+        self.assertEqual(caught.exception.code, 400)
+
+    def test_failed_pdf_download_preserves_cached_text(self):
+        item_id = self.request('/api/reader/items', 'POST', {'publicationNumber': NUMBER})['item']['id']
+        text = ppubs.convert_document(RAW, NUMBER)
+        with patch.object(reader.PpubsClient, 'fetch', return_value=text):
+            self.request(f'/api/reader/fulltext?id={item_id}', 'POST', {'publicationNumber': NUMBER})
+            self.wait_text(item_id)
+        with patch.object(reader.PpubsClient, 'download_pdf', side_effect=ValueError('PDF service unavailable')):
+            self.request(f'/api/reader/pdf?id={item_id}', 'POST')
+            reader._WORKER.submit(lambda: None).result(timeout=5)
+        self.assertEqual(self.request(f'/api/reader/pdf?id={item_id}')['status'], 'failed')
+        self.assertEqual(self.request(f'/api/reader/fulltext?id={item_id}')['data']['claims'], text['claims'])
+        self.assertIsNone(self.request(f'/api/reader/document?id={item_id}')['document'])
 
     def test_new_library_has_no_ledger_or_fee_requirement(self):
         item_id = self.request('/api/reader/items', 'POST', {'title': 'Independent document'})['item']['id']

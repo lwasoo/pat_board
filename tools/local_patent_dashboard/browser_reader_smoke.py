@@ -10,7 +10,7 @@ import dashboard_reader as reader
 from dashboard_database import connect
 from test_documents import DocumentTests, sample_pdf
 from test_reader import RAW, NUMBER
-from dashboard_ppubs import convert_document
+from dashboard_ppubs import convert_document, PublicationChoices
 
 
 def main():
@@ -36,14 +36,20 @@ def main():
             page.get_by_role('link', name='返回文献库').last.click()
             expect(page.locator('.library-card')).to_have_count(1)
             page.locator('#addNumber').click()
-            page.locator('#newNumber').fill(NUMBER)
+            page.locator('#newNumber').fill(NUMBER[:-2])
             page.locator('#createItem').click()
-            expect(page.locator('#patentTitle')).to_have_text(NUMBER)
+            expect(page.locator('#patentTitle')).to_have_text(NUMBER[:-2])
             with patch.object(reader.PpubsClient, 'fetch', side_effect=ValueError('测试网络不可达，本地内容仍可阅读')):
                 page.locator('#fetchText').click()
                 expect(page.locator('#onlineStatus')).to_contain_text('测试网络不可达', timeout=10000)
-            with patch.object(reader.PpubsClient, 'fetch', return_value=convert_document(RAW, NUMBER)):
+            def resolve(number):
+                if number.endswith('A1'):
+                    return convert_document(RAW, NUMBER)
+                raise PublicationChoices([{'publicationNumber': NUMBER}, {'publicationNumber': 'US20250337340A9'}])
+            with patch.object(reader.PpubsClient, 'fetch', side_effect=resolve):
                 page.locator('#fetchText').click()
+                expect(page.locator('#versionChoices')).to_be_visible(timeout=10000)
+                page.locator(f'[data-version="{NUMBER}"]').click()
                 expect(page.locator('#onlineStatus')).to_contain_text('已缓存', timeout=10000)
                 expect(page.locator('#leftPane .claim')).to_have_count(2)
                 expect(page.locator('#leftPane .claim.dependent')).to_have_count(1)
@@ -58,6 +64,21 @@ def main():
                 expect(popup.locator('#rightPane')).to_contain_text('[0002]')
                 popup.close()
             page.screenshot(path=str(output / 'cached-text.png'))
+            with patch.object(reader.PpubsClient, 'download_pdf', side_effect=ValueError('测试原文图像服务不可达')):
+                page.locator('#fetchPdf').click()
+                expect(page.locator('#pdfDownloadStatus')).to_contain_text('测试原文图像服务不可达', timeout=10000)
+                expect(page.locator('#leftPane .claim')).to_have_count(2)
+            with patch.object(reader.PpubsClient, 'download_pdf', return_value=sample_pdf()):
+                page.locator('#fetchPdf').click()
+                expect(page.locator('#documentStatus')).to_contain_text('识别完成', timeout=60000)
+                expect(page.locator('#rightPane [data-figure]')).to_have_count(1)
+                expect(page.locator('#fetchPdf')).to_be_disabled()
+                page.locator('#usePdf').click()
+                expect(page.locator('#leftPane .claim')).to_have_count(3)
+                page.locator('#useOnline').click()
+                expect(page.locator('#leftPane .claim')).to_have_count(2)
+                page.screenshot(path=str(output / 'downloaded-drawings.png'))
+
             page.get_by_role('link', name='返回文献库').last.click()
             expect(page.locator('.library-card')).to_have_count(2)
             page.screenshot(path=str(output / 'library.png'))
@@ -70,7 +91,7 @@ def main():
                 assert conn.execute('SELECT COUNT(*) FROM reading_items').fetchone()[0] == 2
             assert not errors, errors
             browser.close()
-            print('PASS: independent PDF library, no fee prerequisite, PPUBS failure, structured cached text, offline reload, popup and mobile layout')
+            print('PASS: independent PDF library, no fee prerequisite, PPUBS failure, version selection, structured cached text, PDF download failure/retry, drawing panel, offline reload, popup and mobile layout')
     finally:
         reader._WORKER.submit(lambda: None).result(timeout=10)
         harness.tearDown()
